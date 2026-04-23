@@ -1,0 +1,3 @@
+fnc kort() {
+    yazde("Salam, mott!");
+}

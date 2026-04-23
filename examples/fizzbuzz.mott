@@ -1,0 +1,19 @@
+fnc kort() {
+    xilit i: terah = 1;
+    cqachunna (i <= 100) {
+        nagah sanna (i % 3 == 0 a, i % 5 == 0 a) {
+            yazde("FizzBuzz");
+        } khi {
+            nagah sanna (i % 3 == 0) {
+                yazde("Fizz");
+            } khi {
+                nagah sanna (i % 5 == 0) {
+                    yazde("Buzz");
+                } khi {
+                    yazde("{i}");
+                }
+            }
+        }
+        i = i + 1;
+    }
+}
