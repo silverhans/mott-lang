@@ -46,6 +46,10 @@ struct Emitter {
     indent: usize,
     scopes: Vec<HashMap<String, Type>>,
     functions: HashMap<String, FuncSig>,
+    /// Depth of enclosing `cqachunna` loops. Used to validate that `sac` and
+    /// `khida` only appear inside a loop — outside, they'd generate C that
+    /// clang would reject, but we want to catch it with a mott-level error.
+    loop_depth: usize,
 }
 
 impl Emitter {
@@ -69,6 +73,7 @@ impl Emitter {
             indent: 0,
             scopes: Vec::new(),
             functions,
+            loop_depth: 0,
         })
     }
 
@@ -160,6 +165,38 @@ impl Emitter {
         Ok(())
     }
 
+    /// Emit `if (cond) {...} [else ...]` without a leading indent, collapsing
+    /// parser-desugared `khi nagah sanna` chains back into idiomatic C
+    /// `else if`. Parser wraps each chained condition in a single-stmt block
+    /// — we detect that shape and recurse instead of nesting braces.
+    fn emit_if_chain(
+        &mut self,
+        cond: &Expr,
+        then_block: &Block,
+        else_block: Option<&Block>,
+    ) -> Result<()> {
+        self.write("if (");
+        let ct = self.emit_expr(cond)?;
+        if ct != Type::Bool {
+            return Err(Error::Codegen(format!(
+                "`nagah sanna` condition must be bool, got {}",
+                type_name(ct)
+            )));
+        }
+        self.write(")");
+        self.emit_block_inline(then_block)?;
+        if let Some(eb) = else_block {
+            if let Some((c2, t2, e2)) = as_chained_if(eb) {
+                self.write(" else ");
+                self.emit_if_chain(c2, t2, e2)?;
+            } else {
+                self.write(" else");
+                self.emit_block_inline(eb)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Emit `{ ... }` for a control-flow body. Assumes the caller already
     /// wrote everything up to (but not including) the opening brace.
     fn emit_block_inline(&mut self, b: &Block) -> Result<()> {
@@ -226,20 +263,7 @@ impl Emitter {
                 else_block,
             } => {
                 self.write_indent();
-                self.write("if (");
-                let ct = self.emit_expr(cond)?;
-                if ct != Type::Bool {
-                    return Err(Error::Codegen(format!(
-                        "`nagah sanna` condition must be bool, got {}",
-                        type_name(ct)
-                    )));
-                }
-                self.write(")");
-                self.emit_block_inline(then_block)?;
-                if let Some(eb) = else_block {
-                    self.write(" else");
-                    self.emit_block_inline(eb)?;
-                }
+                self.emit_if_chain(cond, then_block, else_block.as_ref())?;
                 self.writeln("");
             }
             Stmt::While { cond, body } => {
@@ -253,8 +277,29 @@ impl Emitter {
                     )));
                 }
                 self.write(")");
-                self.emit_block_inline(body)?;
+                self.loop_depth += 1;
+                let body_result = self.emit_block_inline(body);
+                self.loop_depth -= 1;
+                body_result?;
                 self.writeln("");
+            }
+            Stmt::Break => {
+                if self.loop_depth == 0 {
+                    return Err(Error::Codegen(
+                        "`sac` outside of `cqachunna` loop".into(),
+                    ));
+                }
+                self.write_indent();
+                self.writeln("break;");
+            }
+            Stmt::Continue => {
+                if self.loop_depth == 0 {
+                    return Err(Error::Codegen(
+                        "`khida` outside of `cqachunna` loop".into(),
+                    ));
+                }
+                self.write_indent();
+                self.writeln("continue;");
             }
             Stmt::Return(e) => {
                 self.write_indent();
@@ -616,6 +661,23 @@ impl Emitter {
     }
 }
 
+/// If `b` is a single-stmt block containing only an `If`, return its pieces.
+/// This is the shape the parser produces for `khi nagah sanna` and lets the
+/// backend re-emit `else if` instead of `else { if ... }`.
+fn as_chained_if(b: &Block) -> Option<(&Expr, &Block, Option<&Block>)> {
+    if b.stmts.len() != 1 {
+        return None;
+    }
+    match &b.stmts[0] {
+        Stmt::If {
+            cond,
+            then_block,
+            else_block,
+        } => Some((cond, then_block, else_block.as_ref())),
+        _ => None,
+    }
+}
+
 fn type_to_c(t: Type) -> &'static str {
     match t {
         Type::Terah => "int64_t",
@@ -739,6 +801,40 @@ fnc kort() {
     }
 
     #[test]
+    fn khi_nagah_sanna_emits_else_if() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit x: terah = 1;
+    nagah sanna (x == 1) {
+        yazde("one");
+    } khi nagah sanna (x == 2) {
+        yazde("two");
+    } khi nagah sanna (x == 3) {
+        yazde("three");
+    } khi {
+        yazde("other");
+    }
+}
+"#,
+        );
+        // Should emit idiomatic `else if` — not nested `else { if ... }`.
+        assert!(
+            c.contains("} else if ("),
+            "expected idiomatic `else if`, got:\n{}",
+            c
+        );
+        // Exactly one final `} else {` for the terminal branch.
+        assert_eq!(c.matches("} else {").count(), 1, "got:\n{}", c);
+        // No spurious nested brace-wrapped if.
+        assert!(
+            !c.contains("} else {\n            if ("),
+            "chain should not produce nested blocks, got:\n{}",
+            c
+        );
+    }
+
+    #[test]
     fn logic_and_becomes_cc_and() {
         let c = compile_ok(
             "fnc kort() { xilit x: terah = 5; nagah sanna (x > 0 a, x < 10 a) { yazde(\"ok\"); } }",
@@ -799,5 +895,76 @@ fnc kort() {
             .unwrap_err();
         let msg = format!("{}", err);
         assert!(msg.contains("must be bool"), "got: {}", msg);
+    }
+
+    #[test]
+    fn sac_and_khida_emit_break_continue() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit i: terah = 0;
+    cqachunna (i < 10) {
+        nagah sanna (i == 5) {
+            sac;
+        }
+        i = i + 1;
+        khida;
+    }
+}
+"#,
+        );
+        assert!(c.contains("break;"), "got:\n{}", c);
+        assert!(c.contains("continue;"), "got:\n{}", c);
+    }
+
+    #[test]
+    fn sac_outside_loop_errors() {
+        let err = compile("fnc kort() { sac; }").unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("outside of"), "got: {}", msg);
+    }
+
+    #[test]
+    fn khida_outside_loop_errors() {
+        let err = compile("fnc kort() { khida; }").unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("outside of"), "got: {}", msg);
+    }
+
+    #[test]
+    fn sac_inside_if_inside_loop_is_ok() {
+        // An if nested in a loop must still allow `sac`.
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit i: terah = 0;
+    cqachunna (i < 10) {
+        nagah sanna (i > 3) {
+            sac;
+        }
+        i = i + 1;
+    }
+}
+"#,
+        );
+        assert!(c.contains("break;"));
+    }
+
+    #[test]
+    fn sac_in_separate_function_is_scoped() {
+        // `cqachunna` in helper shouldn't let `sac` escape into `kort`.
+        let err = compile(
+            r#"
+fnc helper() {
+    cqachunna (baqderg) { sac; }
+}
+fnc kort() {
+    sac;
+}
+"#,
+        )
+        .unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("outside of"), "got: {}", msg);
     }
 }

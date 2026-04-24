@@ -14,6 +14,8 @@ pub enum TokenKind {
     NagahSanna,
     Khi,
     Cqachunna,
+    Sac,
+    Khida,
     Baqderg,
     Xarco,
     A,

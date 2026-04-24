@@ -57,6 +57,8 @@ pub enum Stmt {
         cond: Expr,
         body: Block,
     },
+    Break,
+    Continue,
     Return(Option<Expr>),
     Print(Expr),
     ExprStmt(Expr),

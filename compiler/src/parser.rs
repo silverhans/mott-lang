@@ -84,6 +84,8 @@ impl Parser {
             TokenKind::Xilit => self.parse_let(),
             TokenKind::NagahSanna => self.parse_if(),
             TokenKind::Cqachunna => self.parse_while(),
+            TokenKind::Sac => self.parse_break(),
+            TokenKind::Khida => self.parse_continue(),
             TokenKind::Yuxadalo => self.parse_return(),
             TokenKind::Yazde => self.parse_print(),
             TokenKind::Ident(_) if self.peek_kind_at(1) == Some(&TokenKind::Assign) => {
@@ -91,6 +93,18 @@ impl Parser {
             }
             _ => self.parse_expr_stmt(),
         }
+    }
+
+    fn parse_break(&mut self) -> Result<Stmt> {
+        self.expect(&TokenKind::Sac, "expected `sac`")?;
+        self.expect(&TokenKind::Semicolon, "expected `;` after `sac`")?;
+        Ok(Stmt::Break)
+    }
+
+    fn parse_continue(&mut self) -> Result<Stmt> {
+        self.expect(&TokenKind::Khida, "expected `khida`")?;
+        self.expect(&TokenKind::Semicolon, "expected `;` after `khida`")?;
+        Ok(Stmt::Continue)
     }
 
     fn parse_let(&mut self) -> Result<Stmt> {
@@ -121,11 +135,26 @@ impl Parser {
         let cond = self.parse_expr()?;
         self.expect(&TokenKind::RParen, "expected `)` after condition")?;
         let then_block = self.parse_block()?;
+
+        // `khi` may be followed by either `{...}` (classic else) or
+        // `nagah sanna (...) {...}` (else-if sugar). In the sugar case we
+        // desugar into a nested `If` wrapped in a single-stmt Block so the
+        // rest of the pipeline (typecheck, codegen) doesn't need to know
+        // about chains at all. The C backend then re-detects this pattern
+        // to emit idiomatic `else if`.
         let else_block = if self.matches(&TokenKind::Khi) {
-            Some(self.parse_block()?)
+            if self.check(&TokenKind::NagahSanna) {
+                let nested_if = self.parse_if()?;
+                Some(Block {
+                    stmts: vec![nested_if],
+                })
+            } else {
+                Some(self.parse_block()?)
+            }
         } else {
             None
         };
+
         Ok(Stmt::If {
             cond,
             then_block,
@@ -558,6 +587,91 @@ mod tests {
         let p = parse_ok("fnc kort() { cqachunna (i < 10) { i = i + 1; } }");
         let f = only_function(&p);
         assert!(matches!(f.body.stmts[0], Stmt::While { .. }));
+    }
+
+    #[test]
+    fn break_and_continue_parse_as_statements() {
+        let p = parse_ok(
+            r#"fnc kort() {
+                cqachunna (baqderg) {
+                    sac;
+                    khida;
+                }
+            }"#,
+        );
+        let f = only_function(&p);
+        let Stmt::While { body, .. } = &f.body.stmts[0] else {
+            panic!("expected While");
+        };
+        assert!(matches!(body.stmts[0], Stmt::Break));
+        assert!(matches!(body.stmts[1], Stmt::Continue));
+    }
+
+    #[test]
+    fn sac_requires_semicolon() {
+        let err = parse_source("fnc kort() { cqachunna (baqderg) { sac } }").unwrap_err();
+        assert!(format!("{}", err).contains("expected `;`"));
+    }
+
+    #[test]
+    fn khi_nagah_sanna_chain_desugars_to_nested_if() {
+        let p = parse_ok(
+            r#"fnc kort() {
+                xilit x: terah = 1;
+                nagah sanna (x == 1) {
+                    yazde("one");
+                } khi nagah sanna (x == 2) {
+                    yazde("two");
+                } khi {
+                    yazde("other");
+                }
+            }"#,
+        );
+        let f = only_function(&p);
+        // body: [let, if]. The outer If's else should be a single-stmt Block
+        // whose sole stmt is another If with its own else.
+        let Stmt::If { else_block, .. } = &f.body.stmts[1] else {
+            panic!("expected If at body[1]");
+        };
+        let else_block = else_block.as_ref().expect("outer if must have else");
+        assert_eq!(else_block.stmts.len(), 1, "else-if should desugar to one-stmt block");
+        let Stmt::If {
+            else_block: inner_else,
+            ..
+        } = &else_block.stmts[0]
+        else {
+            panic!("expected nested If inside else block");
+        };
+        let inner_else = inner_else.as_ref().expect("inner if must have final else");
+        assert!(matches!(inner_else.stmts[0], Stmt::Print(_)));
+    }
+
+    #[test]
+    fn khi_nagah_sanna_without_final_else_is_ok() {
+        // Chain without a terminal `khi { ... }` should still parse.
+        let p = parse_ok(
+            r#"fnc kort() {
+                xilit x: terah = 1;
+                nagah sanna (x == 1) {
+                    yazde("one");
+                } khi nagah sanna (x == 2) {
+                    yazde("two");
+                }
+            }"#,
+        );
+        let f = only_function(&p);
+        let Stmt::If { else_block, .. } = &f.body.stmts[1] else {
+            panic!("expected If");
+        };
+        let else_block = else_block.as_ref().unwrap();
+        let Stmt::If {
+            else_block: inner,
+            ..
+        } = &else_block.stmts[0]
+        else {
+            panic!("expected nested If");
+        };
+        assert!(inner.is_none(), "innermost else should be absent");
     }
 
     #[test]

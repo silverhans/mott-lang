@@ -197,6 +197,8 @@ impl<'a> Lexer<'a> {
             "yazde" => TokenKind::Yazde,
             "khi" => TokenKind::Khi,
             "cqachunna" => TokenKind::Cqachunna,
+            "sac" => TokenKind::Sac,
+            "khida" => TokenKind::Khida,
             "baqderg" => TokenKind::Baqderg,
             "xarco" => TokenKind::Xarco,
             "a" => TokenKind::A,
@@ -442,7 +444,7 @@ mod tests {
     #[test]
     fn single_keywords() {
         assert_eq!(
-            kinds("fnc xilit yuxadalo yazde khi cqachunna baqderg xarco a ya"),
+            kinds("fnc xilit yuxadalo yazde khi cqachunna sac khida baqderg xarco a ya"),
             vec![
                 TokenKind::Fnc,
                 TokenKind::Xilit,
@@ -450,6 +452,8 @@ mod tests {
                 TokenKind::Yazde,
                 TokenKind::Khi,
                 TokenKind::Cqachunna,
+                TokenKind::Sac,
+                TokenKind::Khida,
                 TokenKind::Baqderg,
                 TokenKind::Xarco,
                 TokenKind::A,
