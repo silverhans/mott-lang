@@ -1,0 +1,46 @@
+{
+  "name": "mott",
+  "displayName": "Mott",
+  "description": "Syntax highlighting and editor support for Mott — a hobby programming language with Chechen keywords.",
+  "version": "0.1.0",
+  "publisher": "silverhans",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/silverhans/mott-lang"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "mott",
+    "chechen",
+    "language",
+    "hobby"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "mott",
+        "aliases": [
+          "Mott",
+          "mott"
+        ],
+        "extensions": [
+          ".mott"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "mott",
+        "scopeName": "source.mott",
+        "path": "./syntaxes/mott.tmLanguage.json"
+      }
+    ]
+  }
+}

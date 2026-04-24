@@ -1,0 +1,82 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "mott: build compiler",
+      "type": "shell",
+      "command": "cargo",
+      "args": ["build"],
+      "options": {
+        "cwd": "${workspaceFolder}/compiler"
+      },
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared"
+      },
+      "problemMatcher": ["$rustc"]
+    },
+    {
+      "label": "mott: build current file",
+      "detail": "Compile the active .mott file to a native binary via the mott compiler (re-runs cargo build first).",
+      "type": "shell",
+      "command": "${workspaceFolder}/compiler/target/debug/mott",
+      "args": [
+        "${file}",
+        "-o",
+        "/tmp/mott-${fileBasenameNoExtension}"
+      ],
+      "dependsOn": "mott: build compiler",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "echo": true,
+        "reveal": "silent",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": [
+        {
+          "owner": "mott",
+          "fileLocation": "absolute",
+          "pattern": {
+            "regexp": "^mott: in (.+?): \\w+ error at (\\d+):(\\d+): (.+)$",
+            "file": 1,
+            "line": 2,
+            "column": 3,
+            "message": 4
+          }
+        },
+        {
+          "owner": "mott",
+          "fileLocation": "absolute",
+          "pattern": {
+            "regexp": "^mott: in (.+?): codegen error: (.+)$",
+            "file": 1,
+            "message": 2
+          }
+        }
+      ]
+    },
+    {
+      "label": "mott: run current file",
+      "detail": "Build the active .mott file and execute the resulting binary.",
+      "type": "shell",
+      "command": "/tmp/mott-${fileBasenameNoExtension}",
+      "dependsOn": "mott: build current file",
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    }
+  ]
+}

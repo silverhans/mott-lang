@@ -1,0 +1,110 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Mott",
+  "scopeName": "source.mott",
+  "fileTypes": ["mott"],
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#typed-binding" },
+    { "include": "#function-declaration" },
+    { "include": "#return-type" },
+    { "include": "#control-keyword" },
+    { "include": "#declaration-keyword" },
+    { "include": "#builtin-function" },
+    { "include": "#type" },
+    { "include": "#boolean" },
+    { "include": "#logic-operator" },
+    { "include": "#number" },
+    { "include": "#operator" }
+  ],
+  "repository": {
+    "comment": {
+      "match": "//.*$",
+      "name": "comment.line.double-slash.mott"
+    },
+    "string": {
+      "name": "string.quoted.double.mott",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "match": "\\\\[nt\"\\\\{}r]",
+          "name": "constant.character.escape.mott"
+        },
+        {
+          "match": "\\{([a-zA-Z_][a-zA-Z0-9_]*)\\}",
+          "captures": {
+            "0": { "name": "meta.interpolation.mott" },
+            "1": { "name": "variable.other.mott" }
+          }
+        }
+      ]
+    },
+    "typed-binding": {
+      "comment": "Matches `name: type` — used for both fn params and typed xilit bindings.",
+      "match": "\\b([a-zA-Z_][a-zA-Z0-9_]*)\\s*(:)\\s*(terah|bool|deshnash|daqosh)\\b",
+      "captures": {
+        "1": { "name": "variable.parameter.mott" },
+        "2": { "name": "punctuation.separator.mott" },
+        "3": { "name": "storage.type.mott" }
+      }
+    },
+    "function-declaration": {
+      "match": "\\b(fnc)\\s+([a-zA-Z_][a-zA-Z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.other.fnc.mott" },
+        "2": { "name": "entity.name.function.mott" }
+      }
+    },
+    "return-type": {
+      "match": "(->)\\s*(terah|bool|deshnash|daqosh)\\b",
+      "captures": {
+        "1": { "name": "keyword.operator.arrow.mott" },
+        "2": { "name": "storage.type.mott" }
+      }
+    },
+    "control-keyword": {
+      "comment": "Two-word `nagah sanna` is intentional — matches the lexer's merged token.",
+      "match": "\\b(nagah\\s+sanna|khi|cqachunna|sac|khida|yuxadalo)\\b",
+      "name": "keyword.control.mott"
+    },
+    "declaration-keyword": {
+      "match": "\\b(fnc|xilit)\\b",
+      "name": "keyword.other.mott"
+    },
+    "builtin-function": {
+      "match": "\\b(yazde)\\b",
+      "name": "support.function.builtin.mott"
+    },
+    "type": {
+      "match": "\\b(terah|bool|deshnash|daqosh)\\b",
+      "name": "storage.type.mott"
+    },
+    "boolean": {
+      "match": "\\b(baqderg|xarco)\\b",
+      "name": "constant.language.bool.mott"
+    },
+    "logic-operator": {
+      "comment": "Chechen postfix AND (`a`) and infix OR (`ya`). These are reserved words, so any standalone occurrence is the operator.",
+      "match": "\\b(a|ya)\\b",
+      "name": "keyword.operator.logical.mott"
+    },
+    "number": {
+      "patterns": [
+        {
+          "match": "\\b[0-9]+\\.[0-9]+\\b",
+          "name": "constant.numeric.float.mott"
+        },
+        {
+          "match": "\\b[0-9]+\\b",
+          "name": "constant.numeric.integer.mott"
+        }
+      ]
+    },
+    "operator": {
+      "match": "==|!=|<=|>=|[+\\-*/%<>=!]",
+      "name": "keyword.operator.mott"
+    }
+  }
+}
