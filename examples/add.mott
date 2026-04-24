@@ -1,10 +1,10 @@
 fnc add(x: terah, y: terah) -> terah {
-    yuxadalo x + y;
+    yuxadalo x + y
 }
 
 fnc kort() {
-    xilit a_val: terah = 7;
-    xilit b_val: terah = 35;
-    xilit sum = add(a_val, b_val);
-    yazde("{a_val} + {b_val} = {sum}");
+    xilit a_val: terah = 7
+    xilit b_val: terah = 35
+    xilit sum = add(a_val, b_val)
+    yazde("{a_val} + {b_val} = {sum}")
 }

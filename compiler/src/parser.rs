@@ -14,7 +14,14 @@ impl Parser {
 
     pub fn parse(&mut self) -> Result<Program> {
         let mut items = Vec::new();
-        while !self.at_end() {
+        loop {
+            // Skip stray `;` between items — the lexer synthesizes them
+            // after each function's closing `}`, and users may write blank
+            // lines between top-level declarations.
+            while self.matches(&TokenKind::Semicolon) {}
+            if self.at_end() {
+                break;
+            }
             items.push(self.parse_item()?);
         }
         Ok(Program { items })
@@ -72,7 +79,15 @@ impl Parser {
     fn parse_block(&mut self) -> Result<Block> {
         self.expect(&TokenKind::LBrace, "expected `{`")?;
         let mut stmts = Vec::new();
-        while !self.check(&TokenKind::RBrace) && !self.at_end() {
+        loop {
+            // Skip stray terminators: the lexer synthesizes `;` on newlines,
+            // and users may also write explicit `;`. Blank lines and
+            // redundant `;` both collapse into multiple consecutive Semicolon
+            // tokens — we treat them as a single boundary.
+            while self.matches(&TokenKind::Semicolon) {}
+            if self.check(&TokenKind::RBrace) || self.at_end() {
+                break;
+            }
             stmts.push(self.parse_stmt()?);
         }
         self.expect(&TokenKind::RBrace, "expected `}`")?;
@@ -131,10 +146,16 @@ impl Parser {
 
     fn parse_if(&mut self) -> Result<Stmt> {
         self.expect(&TokenKind::NagahSanna, "expected `nagah sanna`")?;
-        self.expect(&TokenKind::LParen, "expected `(` after `nagah sanna`")?;
+        // No required `(...)` around the condition: `{` delimits its end.
+        // Grouping `(...)` inside the expression still works as a primary.
         let cond = self.parse_expr()?;
-        self.expect(&TokenKind::RParen, "expected `)` after condition")?;
         let then_block = self.parse_block()?;
+
+        // The lexer synthesizes `;` on newlines after `}`. Skip it so that
+        // `} khi {` on separate lines still joins as a single if/else.
+        // This is the mott equivalent of Go forbidding `}\nelse`: we just
+        // don't force the user to put it on the same line.
+        while self.matches(&TokenKind::Semicolon) {}
 
         // `khi` may be followed by either `{...}` (classic else) or
         // `nagah sanna (...) {...}` (else-if sugar). In the sugar case we
@@ -164,9 +185,7 @@ impl Parser {
 
     fn parse_while(&mut self) -> Result<Stmt> {
         self.expect(&TokenKind::Cqachunna, "expected `cqachunna`")?;
-        self.expect(&TokenKind::LParen, "expected `(` after `cqachunna`")?;
         let cond = self.parse_expr()?;
-        self.expect(&TokenKind::RParen, "expected `)` after condition")?;
         let body = self.parse_block()?;
         Ok(Stmt::While { cond, body })
     }
@@ -830,5 +849,79 @@ mod tests {
     fn top_level_must_be_function() {
         let err = parse_source("xilit x = 5;").unwrap_err();
         assert!(format!("{}", err).contains("expected `fnc`"));
+    }
+
+    #[test]
+    fn parses_without_semicolons_or_condition_parens() {
+        // No explicit `;` anywhere, no `(...)` around the `if` or `while`
+        // conditions. The lexer synthesizes terminators and the parser now
+        // ends conditions at `{`.
+        let p = parse_ok(
+            "fnc kort() {\n    \
+                 xilit x: terah = 5\n    \
+                 cqachunna x < 10 {\n        \
+                     nagah sanna x == 7 {\n            \
+                         yazde(\"seven\")\n        \
+                     } khi {\n            \
+                         yazde(\"{x}\")\n        \
+                     }\n        \
+                     x = x + 1\n    \
+                 }\n\
+             }\n",
+        );
+        let f = only_function(&p);
+        assert!(matches!(f.body.stmts[0], Stmt::Let { .. }));
+        assert!(matches!(f.body.stmts[1], Stmt::While { .. }));
+    }
+
+    #[test]
+    fn else_chain_across_newlines() {
+        // `}` on one line, `khi nagah sanna` on the next — must still parse
+        // as an else-if chain (lexer's synthetic `;` gets skipped before khi).
+        let p = parse_ok(
+            "fnc kort() {\n    \
+                 xilit x: terah = 1\n    \
+                 nagah sanna x == 1 {\n        \
+                     yazde(\"one\")\n    \
+                 }\n    \
+                 khi nagah sanna x == 2 {\n        \
+                     yazde(\"two\")\n    \
+                 }\n    \
+                 khi {\n        \
+                     yazde(\"other\")\n    \
+                 }\n\
+             }\n",
+        );
+        let f = only_function(&p);
+        let Stmt::If { else_block, .. } = &f.body.stmts[1] else {
+            panic!("expected If");
+        };
+        let eb = else_block.as_ref().unwrap();
+        // else_block is a 1-stmt block wrapping the nested If — the
+        // else-if chain shape.
+        assert_eq!(eb.stmts.len(), 1);
+        assert!(matches!(eb.stmts[0], Stmt::If { .. }));
+    }
+
+    #[test]
+    fn multiline_expression_via_parens() {
+        // Inside `(...)`, newlines are whitespace — multi-line expressions
+        // work without extra ceremony.
+        let p = parse_ok(
+            "fnc kort() {\n    \
+                 xilit x: terah = (1 +\n        2 +\n        3)\n    \
+                 yazde(x)\n\
+             }\n",
+        );
+        let f = only_function(&p);
+        assert!(matches!(f.body.stmts[0], Stmt::Let { .. }));
+    }
+
+    #[test]
+    fn explicit_semicolons_still_allowed() {
+        // Backward compatibility: users may still write C-style `;`.
+        let p = parse_ok("fnc kort() { xilit x: terah = 1; yazde(x); }");
+        let f = only_function(&p);
+        assert_eq!(f.body.stmts.len(), 2);
     }
 }

@@ -59,32 +59,52 @@ xarco           // bool false
 
 Особо: однобуквенное `a` и `ya` — тоже зарезервированы (AND/OR). Если нужен параметр с таким именем — выбери другое, например `x`, `y`.
 
+## Разделители инструкций
+
+Инструкции разделяются **переводом строки**. Точка с запятой (`;`) остаётся валидной как явный разделитель и полезна для записи нескольких инструкций на одной строке, но в обычном стиле не пишется.
+
+Внутри `(...)` переводы строки — это обычный пробел. Поэтому длинные выражения переносятся так:
+
+```mott
+xilit sum = (very_long_name +
+             another_name +
+             third_name)
+```
+
+Если перенос за пределами скобок нужен, ставится оператор в конце строки (перенос после бинарного оператора не рвёт выражение):
+
+```mott
+xilit x = foo +
+    bar +
+    baz
+```
+
 ## Переменные
 
 Объявление с инференсом типа или явной аннотацией:
 
 ```mott
-xilit x = 5;                // тип выводится -> terah
-xilit y: terah = 10;        // явный тип
-xilit name: deshnash = "salam";
+xilit x = 5                // тип выводится -> terah
+xilit y: terah = 10        // явный тип
+xilit name: deshnash = "salam"
 ```
 
 Переменные изменяемые (как в C). Повторное объявление в той же области запрещено.
 
 Присваивание:
 ```mott
-x = 42;
+x = 42
 ```
 
 ## Функции
 
 ```mott
 fnc add(a: terah, b: terah) -> terah {
-    yuxadalo a + b;
+    yuxadalo a + b
 }
 
 fnc greet(name: deshnash) {          // без возврата
-    yazde("Salam, {name}!");
+    yazde("Salam, {name}!")
 }
 ```
 
@@ -97,11 +117,13 @@ fnc kort() {
 
 ## Условия
 
+Скобки вокруг условия не нужны — `{` отделяет его от тела.
+
 ```mott
-nagah sanna (x < 5) {
-    yazde("little");
+nagah sanna x < 5 {
+    yazde("little")
 } khi {
-    yazde("big");
+    yazde("big")
 }
 ```
 
@@ -109,27 +131,27 @@ nagah sanna (x < 5) {
 
 ### else-if (`khi nagah sanna`)
 
-После `khi` можно написать ещё одно `nagah sanna (...) {...}` — получается цепочка "иначе если". Синтаксический сахар поверх вложенного `nagah sanna` внутри `khi`-блока.
+После `khi` можно написать ещё одно `nagah sanna ... {...}` — получается цепочка "иначе если". Синтаксический сахар поверх вложенного `nagah sanna` внутри `khi`-блока.
 
 ```mott
-nagah sanna (x == 1) {
-    yazde("one");
-} khi nagah sanna (x == 2) {
-    yazde("two");
-} khi nagah sanna (x == 3) {
-    yazde("three");
+nagah sanna x == 1 {
+    yazde("one")
+} khi nagah sanna x == 2 {
+    yazde("two")
+} khi nagah sanna x == 3 {
+    yazde("three")
 } khi {
-    yazde("other");
+    yazde("other")
 }
 ```
 
-Финальный `khi { ... }` опционален — цепочку можно оборвать после любого звена.
+Финальный `khi { ... }` опционален. `khi` может стоять как на той же строке, что и закрывающая `}`, так и на новой — парсер пропускает разделитель между ними.
 
 ## Циклы
 
 ```mott
-cqachunna (i < 10) {
-    i = i + 1;
+cqachunna i < 10 {
+    i = i + 1
 }
 ```
 
@@ -139,16 +161,16 @@ cqachunna (i < 10) {
 `khida` — пропустить остаток тела и перейти к проверке условия (как `continue`).
 
 ```mott
-cqachunna (baqderg) {
-    nagah sanna (found) {
-        sac;                    // выход из цикла
+cqachunna baqderg {
+    nagah sanna found {
+        sac                     // выход из цикла
     }
-    nagah sanna (i % 2 == 0) {
-        i = i + 1;
-        khida;                  // следующая итерация
+    nagah sanna i % 2 == 0 {
+        i = i + 1
+        khida                   // следующая итерация
     }
-    yazde("{i}");
-    i = i + 1;
+    yazde("{i}")
+    i = i + 1
 }
 ```
 
@@ -179,13 +201,13 @@ cqachunna (baqderg) {
 Синтаксис с постфиксным `a` отражает реальную грамматику чеченского (`слово а слово а`).
 
 ```mott
-nagah sanna (x > 0 a, x < 100 a) {
-    yazde("в диапазоне");
+nagah sanna x > 0 a, x < 100 a {
+    yazde("в диапазоне")
 }
 
 // три условия:
-nagah sanna (x > 0 a, x < 100 a, y != 0 a) {
-    yazde("ok");
+nagah sanna x > 0 a, x < 100 a, y != 0 a {
+    yazde("ok")
 }
 ```
 
@@ -194,13 +216,13 @@ nagah sanna (x > 0 a, x < 100 a, y != 0 a) {
 **Важно: ограничение в контекстах с `,`.** Парсер AND "жадный" — увидев `a` после выражения, он ожидает `, expr a` далее. Это создаёт конфликт с запятой-разделителем в аргументах функций:
 
 ```mott
-yazde(x a, y a, z);   // ошибка: z ждёт трейлинг `a`
-yazde((x a, y a), z); // корректно: скобки ограничивают область AND
+yazde(x a, y a, z)   // ошибка: z ждёт трейлинг `a`
+yazde((x a, y a), z) // корректно: скобки ограничивают область AND
 ```
 
-Внутри скобок `if`/`while`-условия это не проблема — закрывающая `)` завершает AND:
+Внутри условий `if`/`while` это не проблема — открывающая `{` завершает AND:
 ```mott
-nagah sanna (x a, y a) { ... }   // ок
+nagah sanna x a, y a { ... }   // ок
 ```
 
 ## Интерполяция строк
@@ -208,8 +230,8 @@ nagah sanna (x a, y a) { ... }   // ок
 Любой строковый литерал поддерживает `{ident}`:
 
 ```mott
-xilit x = 5;
-yazde("x = {x}");           // -> "x = 5\n"
+xilit x = 5
+yazde("x = {x}")           // -> "x = 5\n"
 ```
 
 Поддерживается только подстановка идентификатора, не произвольного выражения (в MVP). Выражения — через временные переменные.
@@ -221,9 +243,9 @@ yazde("x = {x}");           // -> "x = 5\n"
 `yazde(expr)` — печатает значение любого примитивного типа и добавляет `\n`.
 
 ```mott
-yazde("hello");
-yazde(42);
-yazde(baqderg);
+yazde("hello")
+yazde(42)
+yazde(baqderg)
 ```
 
 ## Комментарии
@@ -231,6 +253,8 @@ yazde(baqderg);
 `//` — до конца строки. Блочных нет в MVP.
 
 ## Грамматика (EBNF, неформально)
+
+`TERM` — терминатор инструкции: перевод строки (на нулевой глубине скобок) или литеральная `;`. Лексер синтезирует `;` на переводах строки после токенов, которые могут завершать выражение (literal, ident, `)`, `}`, `sac`, `khida`, `yuxadalo`), в остальных случаях перевод строки — пробел.
 
 ```
 program        = { function } ;
@@ -242,16 +266,16 @@ block          = "{" { stmt } "}" ;
 stmt           = let_stmt | assign_stmt | if_stmt | while_stmt
                | break_stmt | continue_stmt
                | return_stmt | print_stmt | expr_stmt ;
-let_stmt       = "xilit" IDENT [ ":" type ] "=" expr ";" ;
-assign_stmt    = IDENT "=" expr ";" ;
-if_stmt        = "nagah sanna" "(" expr ")" block
+let_stmt       = "xilit" IDENT [ ":" type ] "=" expr TERM ;
+assign_stmt    = IDENT "=" expr TERM ;
+if_stmt        = "nagah sanna" expr block
                [ "khi" ( if_stmt | block ) ] ;
-while_stmt     = "cqachunna" "(" expr ")" block ;
-break_stmt     = "sac" ";" ;
-continue_stmt  = "khida" ";" ;
-return_stmt    = "yuxadalo" [ expr ] ";" ;
-print_stmt     = "yazde" "(" expr ")" ";" ;
-expr_stmt      = expr ";" ;
+while_stmt     = "cqachunna" expr block ;
+break_stmt     = "sac" TERM ;
+continue_stmt  = "khida" TERM ;
+return_stmt    = "yuxadalo" [ expr ] TERM ;
+print_stmt     = "yazde" "(" expr ")" TERM ;
+expr_stmt      = expr TERM ;
 (* expr grammar handled by Pratt parser with precedences above *)
 ```
 

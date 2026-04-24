@@ -1,6 +1,28 @@
 use crate::error::{Error, Result};
 use crate::token::{StringPart, Token, TokenKind};
 
+/// Does this token kind "complete" a statement? If so, a newline immediately
+/// after it (at bracket depth 0) is treated as a statement terminator and a
+/// synthetic `Semicolon` is emitted. Tokens NOT in this set leave the
+/// statement open across the newline — e.g. after a binary operator or open
+/// paren, the expression continues.
+fn is_stmt_end(k: &TokenKind) -> bool {
+    matches!(
+        k,
+        TokenKind::Integer(_)
+            | TokenKind::Float(_)
+            | TokenKind::String(_)
+            | TokenKind::Ident(_)
+            | TokenKind::Baqderg
+            | TokenKind::Xarco
+            | TokenKind::RParen
+            | TokenKind::RBrace
+            | TokenKind::Sac
+            | TokenKind::Khida
+            | TokenKind::Yuxadalo
+    )
+}
+
 pub struct Lexer<'a> {
     source: &'a str,
     pos: usize,
@@ -19,12 +41,46 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn tokenize(&mut self) -> Result<Vec<Token>> {
-        let mut tokens = Vec::new();
+        // Mott uses newlines as statement terminators (with explicit `;` still
+        // accepted as a synonym). We synthesize `Semicolon` tokens on newlines
+        // at bracket-depth 0 when the previous token can end a statement —
+        // a simplified Go/Swift ASI rule. Inside `(` or `[`, newlines are
+        // whitespace, so multi-line expressions work naturally when wrapped
+        // in parens. `{` and `}` do NOT affect bracket depth: we want
+        // newlines inside blocks to terminate statements.
+        let mut tokens: Vec<Token> = Vec::new();
+        let mut paren_depth: i32 = 0;
         loop {
-            self.skip_trivia();
+            let saw_newline = self.skip_trivia();
             let line = self.line;
             let col = self.col;
+
+            // Synthesize Semicolon on newline at depth 0 if the last real
+            // token can end a statement. Deduplicates against explicit `;`.
+            if saw_newline && paren_depth == 0 {
+                if let Some(last) = tokens.last() {
+                    if is_stmt_end(&last.kind) {
+                        tokens.push(Token {
+                            kind: TokenKind::Semicolon,
+                            line,
+                            col,
+                        });
+                    }
+                }
+            }
+
             let Some(ch) = self.peek() else {
+                // Before EOF, synthesize a final `;` if needed — handles
+                // files that don't end with a trailing newline.
+                if let Some(last) = tokens.last() {
+                    if is_stmt_end(&last.kind) {
+                        tokens.push(Token {
+                            kind: TokenKind::Semicolon,
+                            line,
+                            col,
+                        });
+                    }
+                }
                 tokens.push(Token {
                     kind: TokenKind::Eof,
                     line,
@@ -33,6 +89,11 @@ impl<'a> Lexer<'a> {
                 return Ok(tokens);
             };
             let kind = self.scan_token(ch, line, col)?;
+            match &kind {
+                TokenKind::LParen => paren_depth += 1,
+                TokenKind::RParen => paren_depth = paren_depth.saturating_sub(1),
+                _ => {}
+            }
             tokens.push(Token { kind, line, col });
         }
     }
@@ -363,11 +424,19 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    fn skip_trivia(&mut self) {
+    /// Skip whitespace and line comments. Returns `true` if at least one
+    /// newline was consumed — the tokenizer uses this to decide whether to
+    /// synthesize a `Semicolon` (newline = statement terminator at depth 0).
+    fn skip_trivia(&mut self) -> bool {
+        let mut saw_newline = false;
         loop {
             match self.peek() {
-                Some(' ') | Some('\t') | Some('\r') | Some('\n') => {
+                Some(' ') | Some('\t') | Some('\r') => {
                     self.advance();
+                }
+                Some('\n') => {
+                    self.advance();
+                    saw_newline = true;
                 }
                 Some('/') if self.peek_nth(1) == Some('/') => {
                     while let Some(c) = self.peek() {
@@ -377,7 +446,7 @@ impl<'a> Lexer<'a> {
                         self.advance();
                     }
                 }
-                _ => return,
+                _ => return saw_newline,
             }
         }
     }
@@ -512,6 +581,7 @@ mod tests {
                 TokenKind::Ident("x1".into()),
                 TokenKind::Integer(42),
                 TokenKind::Float(3.14),
+                TokenKind::Semicolon, // synthetic EOF terminator
                 TokenKind::Eof,
             ]
         );
@@ -550,10 +620,14 @@ mod tests {
 
     #[test]
     fn string_without_interpolation() {
+        // The trailing Semicolon before Eof is the lexer's ASI rule: a
+        // string literal ends a statement, so the implicit EOF terminator
+        // fires. All subsequent fixture tests follow the same pattern.
         assert_eq!(
             kinds(r#""salam""#),
             vec![
                 TokenKind::String(vec![StringPart::Literal("salam".into())]),
+                TokenKind::Semicolon,
                 TokenKind::Eof,
             ]
         );
@@ -570,6 +644,7 @@ mod tests {
                     StringPart::Literal(", y = ".into()),
                     StringPart::Interpolation("y".into()),
                 ]),
+                TokenKind::Semicolon,
                 TokenKind::Eof,
             ]
         );
@@ -581,6 +656,7 @@ mod tests {
             kinds(r#""\{x}""#),
             vec![
                 TokenKind::String(vec![StringPart::Literal("{x}".into())]),
+                TokenKind::Semicolon,
                 TokenKind::Eof,
             ]
         );
@@ -590,7 +666,11 @@ mod tests {
     fn empty_string_produces_empty_parts() {
         assert_eq!(
             kinds(r#""""#),
-            vec![TokenKind::String(vec![]), TokenKind::Eof]
+            vec![
+                TokenKind::String(vec![]),
+                TokenKind::Semicolon,
+                TokenKind::Eof
+            ]
         );
     }
 
@@ -636,8 +716,96 @@ mod tests {
                 TokenKind::RParen,
                 TokenKind::Semicolon,
                 TokenKind::RBrace,
+                TokenKind::Semicolon, // synthetic after closing `}` + newline
                 TokenKind::Eof,
             ]
         );
+    }
+
+    #[test]
+    fn newline_synthesizes_semicolon_after_expression() {
+        // Two `xilit` statements separated only by newline — no explicit `;`.
+        let ks = kinds("xilit x = 1\nxilit y = 2\n");
+        assert_eq!(
+            ks,
+            vec![
+                TokenKind::Xilit,
+                TokenKind::Ident("x".into()),
+                TokenKind::Assign,
+                TokenKind::Integer(1),
+                TokenKind::Semicolon, // synthetic
+                TokenKind::Xilit,
+                TokenKind::Ident("y".into()),
+                TokenKind::Assign,
+                TokenKind::Integer(2),
+                TokenKind::Semicolon, // synthetic
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn no_synthetic_semicolon_after_binary_operator() {
+        // Multi-line expressions continue across newlines when the line ends
+        // on a token that can't terminate a statement.
+        let ks = kinds("xilit x = 1 +\n    2\n");
+        assert_eq!(
+            ks,
+            vec![
+                TokenKind::Xilit,
+                TokenKind::Ident("x".into()),
+                TokenKind::Assign,
+                TokenKind::Integer(1),
+                TokenKind::Plus,
+                TokenKind::Integer(2),
+                TokenKind::Semicolon,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn no_synthetic_semicolon_inside_parens() {
+        // Inside `(`, newlines are pure whitespace.
+        let ks = kinds("foo(1,\n    2,\n    3)\n");
+        assert_eq!(
+            ks,
+            vec![
+                TokenKind::Ident("foo".into()),
+                TokenKind::LParen,
+                TokenKind::Integer(1),
+                TokenKind::Comma,
+                TokenKind::Integer(2),
+                TokenKind::Comma,
+                TokenKind::Integer(3),
+                TokenKind::RParen,
+                TokenKind::Semicolon,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn blank_lines_do_not_produce_duplicate_semicolons() {
+        // Consecutive newlines only emit a single terminator — the second
+        // newline sees `Semicolon` as the last token and skips.
+        let ks = kinds("xilit x = 1\n\n\nxilit y = 2\n");
+        let semis = ks
+            .iter()
+            .filter(|k| matches!(k, TokenKind::Semicolon))
+            .count();
+        assert_eq!(semis, 2, "expected two Semicolons, got: {:?}", ks);
+    }
+
+    #[test]
+    fn explicit_semicolon_still_works() {
+        // Users who want C-style can still write `;` — lexer produces a
+        // single Semicolon, no duplicate from the following newline.
+        let ks = kinds("xilit x = 1;\n");
+        let semis = ks
+            .iter()
+            .filter(|k| matches!(k, TokenKind::Semicolon))
+            .count();
+        assert_eq!(semis, 1, "expected single Semicolon, got: {:?}", ks);
     }
 }
