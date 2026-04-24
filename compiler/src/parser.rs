@@ -475,6 +475,32 @@ impl Parser {
                 self.expect(&TokenKind::RParen, "expected `)` after `baram(...)`")?;
                 Ok(Expr::Baram(Box::new(inner)))
             }
+            TokenKind::ParseTerah => {
+                // `parse_terah(s)` — string -> terah. Arg must be deshnash;
+                // fail-fast at runtime on bad input. Structure mirrors
+                // `baram` above — same primary-call shape.
+                self.advance();
+                self.expect(&TokenKind::LParen, "expected `(` after `parse_terah`")?;
+                let inner = self.parse_expr()?;
+                self.expect(
+                    &TokenKind::RParen,
+                    "expected `)` after `parse_terah(...)`",
+                )?;
+                Ok(Expr::ParseTerah(Box::new(inner)))
+            }
+            TokenKind::ParseDaqosh => {
+                self.advance();
+                self.expect(
+                    &TokenKind::LParen,
+                    "expected `(` after `parse_daqosh`",
+                )?;
+                let inner = self.parse_expr()?;
+                self.expect(
+                    &TokenKind::RParen,
+                    "expected `)` after `parse_daqosh(...)`",
+                )?;
+                Ok(Expr::ParseDaqosh(Box::new(inner)))
+            }
             other => Err(Error::Parse {
                 line,
                 col,
@@ -1125,6 +1151,42 @@ mod tests {
             panic!("expected ForEach");
         };
         assert!(matches!(iter, IterSource::Range { .. }));
+    }
+
+    #[test]
+    fn parse_terah_parses_as_parse_terah_expr() {
+        let p = parse_ok(
+            r#"fnc kort() {
+                xilit n: terah = parse_terah("42")
+            }"#,
+        );
+        let f = only_function(&p);
+        let Stmt::Let { value, .. } = &f.body.stmts[0] else {
+            panic!("expected Let");
+        };
+        assert!(matches!(value, Expr::ParseTerah(_)));
+    }
+
+    #[test]
+    fn parse_daqosh_parses_as_parse_daqosh_expr() {
+        let p = parse_ok(
+            r#"fnc kort() {
+                xilit x: daqosh = parse_daqosh("3.14")
+            }"#,
+        );
+        let f = only_function(&p);
+        let Stmt::Let { value, .. } = &f.body.stmts[0] else {
+            panic!("expected Let");
+        };
+        assert!(matches!(value, Expr::ParseDaqosh(_)));
+    }
+
+    #[test]
+    fn parse_terah_requires_parens() {
+        // Bare `parse_terah` with no `(` is a parse error — it's not a
+        // usable identifier, only a call-shaped primary.
+        let err = parse_source("fnc kort() { xilit n: terah = parse_terah }").unwrap_err();
+        assert!(format!("{}", err).contains("`(`"));
     }
 
     #[test]

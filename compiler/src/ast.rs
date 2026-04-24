@@ -124,6 +124,13 @@ pub enum Expr {
     /// `baram(x)` — size/length built-in. Works on arrays and strings; the
     /// codegen picks the right struct field at emission time.
     Baram(Box<Expr>),
+    /// `parse_terah(s)` — parse a deshnash into a terah. Aborts at runtime
+    /// on malformed input (empty, trailing garbage, overflow). No Result
+    /// type yet; that's a post-MVP addition.
+    ParseTerah(Box<Expr>),
+    /// `parse_daqosh(s)` — same as ParseTerah, but for daqosh. Uses strtod
+    /// so accepts the usual float forms (decimal, exponent, infinity, nan).
+    ParseDaqosh(Box<Expr>),
 }
 
 #[derive(Debug, Clone, Copy)]

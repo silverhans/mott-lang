@@ -824,6 +824,32 @@ impl Emitter {
                 self.write(".len))");
                 Ok(Type::Terah)
             }
+            Expr::ParseTerah(inner) => {
+                let t = self.infer(inner)?;
+                if t != Type::Deshnash {
+                    return Err(Error::Codegen(format!(
+                        "`parse_terah` needs a deshnash, got {}",
+                        type_name(&t)
+                    )));
+                }
+                self.write("mott_parse_terah(");
+                self.emit_expr(inner)?;
+                self.write(")");
+                Ok(Type::Terah)
+            }
+            Expr::ParseDaqosh(inner) => {
+                let t = self.infer(inner)?;
+                if t != Type::Deshnash {
+                    return Err(Error::Codegen(format!(
+                        "`parse_daqosh` needs a deshnash, got {}",
+                        type_name(&t)
+                    )));
+                }
+                self.write("mott_parse_daqosh(");
+                self.emit_expr(inner)?;
+                self.write(")");
+                Ok(Type::Daqosh)
+            }
         }
     }
 
@@ -935,6 +961,8 @@ impl Emitter {
                 }
             }
             Expr::Baram(_) => Ok(Type::Terah),
+            Expr::ParseTerah(_) => Ok(Type::Terah),
+            Expr::ParseDaqosh(_) => Ok(Type::Daqosh),
         }
     }
 
@@ -1430,6 +1458,96 @@ fnc kort() {
         );
         assert!(c.contains("for (int64_t i = "), "got:\n{}", c);
         assert!(c.contains("i++"), "got:\n{}", c);
+    }
+
+    #[test]
+    fn parse_terah_emits_runtime_call() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit s: deshnash = "42"
+    xilit n: terah = parse_terah(s)
+    yazde(n)
+}
+"#,
+        );
+        assert!(c.contains("mott_parse_terah(s)"), "got:\n{}", c);
+        assert!(c.contains("int64_t n = "), "got:\n{}", c);
+    }
+
+    #[test]
+    fn parse_daqosh_emits_runtime_call() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit s: deshnash = "3.14"
+    xilit x: daqosh = parse_daqosh(s)
+    yazde(x)
+}
+"#,
+        );
+        assert!(c.contains("mott_parse_daqosh(s)"), "got:\n{}", c);
+        assert!(c.contains("double x = "), "got:\n{}", c);
+    }
+
+    #[test]
+    fn parse_terah_on_non_string_is_rejected() {
+        let err = compile(
+            r#"
+fnc kort() {
+    xilit n: terah = parse_terah(42)
+}
+"#,
+        )
+        .unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("needs a deshnash"), "got: {}", msg);
+    }
+
+    #[test]
+    fn parse_daqosh_on_non_string_is_rejected() {
+        let err = compile(
+            r#"
+fnc kort() {
+    xilit x: daqosh = parse_daqosh(baqderg)
+}
+"#,
+        )
+        .unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("needs a deshnash"), "got: {}", msg);
+    }
+
+    #[test]
+    fn parse_result_type_mismatch_is_caught() {
+        // parse_terah returns terah; storing in a daqosh variable is a
+        // type error, caught at the Let site.
+        let err = compile(
+            r#"
+fnc kort() {
+    xilit x: daqosh = parse_terah("42")
+}
+"#,
+        )
+        .unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("type mismatch"), "got: {}", msg);
+    }
+
+    #[test]
+    fn parse_can_be_chained_with_esha() {
+        // parse_terah(esha()) — the bread-and-butter use case. Just check
+        // it type-checks and emits both calls; runtime behavior is covered
+        // by the sum-input integration example.
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit n: terah = parse_terah(esha())
+    yazde(n)
+}
+"#,
+        );
+        assert!(c.contains("mott_parse_terah(mott_input())"), "got:\n{}", c);
     }
 
     #[test]

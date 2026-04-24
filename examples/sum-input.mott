@@ -1,0 +1,12 @@
+// Читает два числа со stdin и печатает их сумму.
+// Демонстрирует parse_terah — превращение deshnash в terah.
+// Запусти: printf "3\n4\n" | mott examples/sum-input.mott -o /tmp/s && /tmp/s
+
+fnc kort() {
+    yazde("первое число:")
+    xilit first: terah = parse_terah(esha())
+    yazde("второе число:")
+    xilit second: terah = parse_terah(esha())
+    xilit sum: terah = first + second
+    yazde("сумма = {sum}")
+}

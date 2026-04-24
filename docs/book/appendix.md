@@ -19,6 +19,8 @@
 | `sac` | саца | `break` |
 | `khida` | хьида | `continue` |
 | `baram` | барам | длина массива/строки |
+| `parse_terah` | | `deshnash` → `terah` |
+| `parse_daqosh` | | `deshnash` → `daqosh` |
 | `baqderg` | бакъдерг | `true` |
 | `xarco` | харцо | `false` |
 | `a` | | постфиксное AND |
@@ -41,7 +43,7 @@
 ```
 fnc xilit yuxadalo yazde esha
 nagah sanna khi cqachunna yallalc chu
-sac khida baram baqderg xarco
+sac khida baram parse_terah parse_daqosh baqderg xarco
 a ya
 terah bool deshnash daqosh
 ```
@@ -165,6 +167,8 @@ nagah sanna !ready {
 ```mott
 yazde(expr)                            // печать, +\n
 xilit line: deshnash = esha()          // одна строка с stdin
+xilit n: terah = parse_terah(line)     // строка → целое
+xilit x: daqosh = parse_daqosh(line)   // строка → float
 ```
 
 ## Escape-последовательности в строках
@@ -200,7 +204,7 @@ xilit line: deshnash = esha()          // одна строка с stdin
 - Вложенные массивы `[[T]]`
 - `push`/`pop`/`append` на массивах
 - Конкатенация строк через `+`
-- Конверсии типов (`to_daqosh`, `parse_terah`)
+- Конверсии между числовыми типами (`to_daqosh`, `to_terah`)
 - Методы (`arr.len`, `s.upper`) — пока только функции
 - Структуры и enums
 - Замыкания

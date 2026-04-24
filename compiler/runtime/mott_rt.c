@@ -2,6 +2,7 @@
 
 #include "mott_rt.h"
 
+#include <errno.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -127,6 +128,52 @@ mott_str mott_input(void) {
         line[len] = '\0';
     }
     return (mott_str){ .data = line, .len = len };
+}
+
+/* --- Number parsing --- */
+
+/* Fatal error used by the parse helpers. Prints the offending input so the
+ * user can see what they actually got — handy when the string came from
+ * esha() / a file / stdin and isn't obvious from the source. */
+static void mott__parse_fatal(const char *what, mott_str s) {
+    fprintf(stderr, "mott runtime: %s: '%.*s'\n",
+            what, (int)s.len, s.data);
+    abort();
+}
+
+int64_t mott_parse_terah(mott_str s) {
+    if (s.len == 0) {
+        mott__parse_fatal("parse_terah: empty string", s);
+    }
+    /* All Mott strings are NUL-terminated exactly at s.data[s.len]; strtoll
+     * stops at the first non-digit anyway, so we check `end` below to
+     * ensure the entire input was consumed (modulo leading whitespace). */
+    char *end = NULL;
+    errno = 0;
+    long long v = strtoll(s.data, &end, 10);
+    if (errno == ERANGE) {
+        mott__parse_fatal("parse_terah: out of range", s);
+    }
+    if (end != s.data + s.len) {
+        mott__parse_fatal("parse_terah: not a valid integer", s);
+    }
+    return (int64_t)v;
+}
+
+double mott_parse_daqosh(mott_str s) {
+    if (s.len == 0) {
+        mott__parse_fatal("parse_daqosh: empty string", s);
+    }
+    char *end = NULL;
+    errno = 0;
+    double v = strtod(s.data, &end);
+    if (errno == ERANGE) {
+        mott__parse_fatal("parse_daqosh: out of range", s);
+    }
+    if (end != s.data + s.len) {
+        mott__parse_fatal("parse_daqosh: not a valid float", s);
+    }
+    return v;
 }
 
 mott_str mott_str_build(const mott_str *parts, size_t n) {

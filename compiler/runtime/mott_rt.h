@@ -54,6 +54,19 @@ bool mott_str_eq(mott_str a, mott_str b);
  * mott_str (zero length, static data pointer). Leaks in MVP. */
 mott_str mott_input(void);
 
+/* Parse a deshnash into a terah/daqosh.
+ *
+ * Semantics: leading whitespace is tolerated (strtoll/strtod habit),
+ * everything else must be a well-formed number — trailing garbage, empty
+ * string, or overflow all trigger a fatal runtime error with `abort()`.
+ * When we gain a Result/Option type these will flip to non-fatal.
+ *
+ * Input must be NUL-terminated at s.data[s.len] (which every Mott string
+ * is — see notes on mott_str above). Callers should never construct
+ * mott_str values that violate this invariant. */
+int64_t mott_parse_terah(mott_str s);
+double  mott_parse_daqosh(mott_str s);
+
 /* --- Arrays ------------------------------------------------------------
  *
  * One struct per element type (until we get generics). All share the same

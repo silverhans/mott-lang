@@ -20,6 +20,8 @@ pub enum TokenKind {
     Sac,
     Khida,
     Baram,
+    ParseTerah,
+    ParseDaqosh,
     Baqderg,
     Xarco,
     A,
