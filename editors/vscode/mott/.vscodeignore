@@ -2,3 +2,4 @@
 .vscode-test/**
 .vscodeignore
 *.vsix
+assets/**
