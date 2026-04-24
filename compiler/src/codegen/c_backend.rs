@@ -850,6 +850,33 @@ impl Emitter {
                 self.write(")");
                 Ok(Type::Daqosh)
             }
+            Expr::ToTerah(inner) => {
+                let t = self.infer(inner)?;
+                if !matches!(t, Type::Terah | Type::Daqosh) {
+                    return Err(Error::Codegen(format!(
+                        "`to_terah` needs a numeric type (terah or daqosh), got {}",
+                        type_name(&t)
+                    )));
+                }
+                // C cast — truncates toward zero for floats. No runtime call.
+                self.write("((int64_t)(");
+                self.emit_expr(inner)?;
+                self.write("))");
+                Ok(Type::Terah)
+            }
+            Expr::ToDaqosh(inner) => {
+                let t = self.infer(inner)?;
+                if !matches!(t, Type::Terah | Type::Daqosh) {
+                    return Err(Error::Codegen(format!(
+                        "`to_daqosh` needs a numeric type (terah or daqosh), got {}",
+                        type_name(&t)
+                    )));
+                }
+                self.write("((double)(");
+                self.emit_expr(inner)?;
+                self.write("))");
+                Ok(Type::Daqosh)
+            }
         }
     }
 
@@ -963,6 +990,8 @@ impl Emitter {
             Expr::Baram(_) => Ok(Type::Terah),
             Expr::ParseTerah(_) => Ok(Type::Terah),
             Expr::ParseDaqosh(_) => Ok(Type::Daqosh),
+            Expr::ToTerah(_) => Ok(Type::Terah),
+            Expr::ToDaqosh(_) => Ok(Type::Daqosh),
         }
     }
 
@@ -1532,6 +1561,99 @@ fnc kort() {
         .unwrap_err();
         let msg = format!("{}", err);
         assert!(msg.contains("type mismatch"), "got: {}", msg);
+    }
+
+    #[test]
+    fn to_terah_from_daqosh_emits_cast() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit x: daqosh = 3.7
+    xilit n: terah = to_terah(x)
+    yazde(n)
+}
+"#,
+        );
+        assert!(c.contains("((int64_t)(x))"), "got:\n{}", c);
+        assert!(c.contains("int64_t n = "), "got:\n{}", c);
+    }
+
+    #[test]
+    fn to_daqosh_from_terah_emits_cast() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit n: terah = 42
+    xilit x: daqosh = to_daqosh(n)
+    yazde(x)
+}
+"#,
+        );
+        assert!(c.contains("((double)(n))"), "got:\n{}", c);
+        assert!(c.contains("double x = "), "got:\n{}", c);
+    }
+
+    #[test]
+    fn to_terah_on_terah_is_noop_cast() {
+        // Allowed but pointless — we don't special-case it, just emit the
+        // cast. Rationale: same rule as `x as i64` in Rust on an `i64`.
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit n: terah = 5
+    xilit m: terah = to_terah(n)
+    yazde(m)
+}
+"#,
+        );
+        assert!(c.contains("((int64_t)(n))"), "got:\n{}", c);
+    }
+
+    #[test]
+    fn to_terah_on_non_numeric_is_rejected() {
+        let err = compile(
+            r#"
+fnc kort() {
+    xilit n: terah = to_terah(baqderg)
+}
+"#,
+        )
+        .unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("numeric"), "got: {}", msg);
+    }
+
+    #[test]
+    fn to_daqosh_on_string_is_rejected() {
+        let err = compile(
+            r#"
+fnc kort() {
+    xilit s: deshnash = "42"
+    xilit x: daqosh = to_daqosh(s)
+}
+"#,
+        )
+        .unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("numeric"), "got: {}", msg);
+    }
+
+    #[test]
+    fn to_daqosh_enables_real_float_division() {
+        // The motivating use case: sum / count as float. Without to_daqosh
+        // this would have been integer division.
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit total: terah = 78
+    xilit n: terah = 10
+    xilit avg: daqosh = to_daqosh(total) / to_daqosh(n)
+    yazde(avg)
+}
+"#,
+        );
+        assert!(c.contains("((double)(total))"), "got:\n{}", c);
+        assert!(c.contains("((double)(n))"), "got:\n{}", c);
     }
 
     #[test]

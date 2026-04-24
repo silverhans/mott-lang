@@ -15,9 +15,11 @@ void mott_yazde_terah(int64_t v) {
 }
 
 void mott_yazde_daqosh(double v) {
-    /* %g drops trailing zeros; "17 significant digits" is enough to
-     * round-trip an IEEE-754 double. */
-    printf("%.17g\n", v);
+    /* %.15g — 15 significant digits, trailing zeros dropped. Enough precision
+     * for most real-world numbers while keeping "7.8" from rendering as
+     * "7.7999999999999998". If someone needs exact IEEE-754 round-trip,
+     * they can format manually — this is the human-facing path. */
+    printf("%.15g\n", v);
 }
 
 void mott_yazde_bool(bool v) {
@@ -55,8 +57,9 @@ mott_str mott_str_from_terah(int64_t v) {
 }
 
 mott_str mott_str_from_daqosh(double v) {
+    /* Match mott_yazde_daqosh formatting — same 15-digit precision. */
     char buf[64];
-    int n = snprintf(buf, sizeof(buf), "%.17g", v);
+    int n = snprintf(buf, sizeof(buf), "%.15g", v);
     if (n < 0) {
         return (mott_str){ .data = "", .len = 0 };
     }

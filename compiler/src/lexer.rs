@@ -290,6 +290,8 @@ impl<'a> Lexer<'a> {
             "baram" => TokenKind::Baram,
             "parse_terah" => TokenKind::ParseTerah,
             "parse_daqosh" => TokenKind::ParseDaqosh,
+            "to_terah" => TokenKind::ToTerah,
+            "to_daqosh" => TokenKind::ToDaqosh,
             "baqderg" => TokenKind::Baqderg,
             "xarco" => TokenKind::Xarco,
             "a" => TokenKind::A,
@@ -545,7 +547,8 @@ mod tests {
         assert_eq!(
             kinds(
                 "fnc xilit yuxadalo yazde esha khi cqachunna yallalc chu \
-                 sac khida baram parse_terah parse_daqosh baqderg xarco a ya"
+                 sac khida baram parse_terah parse_daqosh to_terah to_daqosh \
+                 baqderg xarco a ya"
             ),
             vec![
                 TokenKind::Fnc,
@@ -562,6 +565,8 @@ mod tests {
                 TokenKind::Baram,
                 TokenKind::ParseTerah,
                 TokenKind::ParseDaqosh,
+                TokenKind::ToTerah,
+                TokenKind::ToDaqosh,
                 TokenKind::Baqderg,
                 TokenKind::Xarco,
                 TokenKind::A,

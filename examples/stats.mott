@@ -1,0 +1,102 @@
+// Статистика массива: сумма, среднее (как daqosh), min/max,
+// количество чётных, простые числа.
+// Демонстрирует массивы, for-each, to_daqosh, is_prime через cqachunna.
+// Это финальный пример из 9 главы учебника.
+
+fnc sum(nums: [terah]) -> terah {
+    xilit total: terah = 0
+    yallalc n chu nums {
+        total = total + n
+    }
+    yuxadalo total
+}
+
+fnc average(nums: [terah]) -> daqosh {
+    yuxadalo to_daqosh(sum(nums)) / to_daqosh(baram(nums))
+}
+
+fnc find_min(nums: [terah]) -> terah {
+    xilit min: terah = nums[0]
+    yallalc i chu 1..baram(nums) {
+        nagah sanna nums[i] < min {
+            min = nums[i]
+        }
+    }
+    yuxadalo min
+}
+
+fnc find_max(nums: [terah]) -> terah {
+    xilit max: terah = nums[0]
+    yallalc i chu 1..baram(nums) {
+        nagah sanna nums[i] > max {
+            max = nums[i]
+        }
+    }
+    yuxadalo max
+}
+
+fnc count_even(nums: [terah]) -> terah {
+    xilit count: terah = 0
+    yallalc n chu nums {
+        nagah sanna n % 2 == 0 {
+            count = count + 1
+        }
+    }
+    yuxadalo count
+}
+
+fnc is_prime(n: terah) -> bool {
+    nagah sanna n < 2 {
+        yuxadalo xarco
+    }
+    xilit d: terah = 2
+    cqachunna d * d <= n {
+        nagah sanna n % d == 0 {
+            yuxadalo xarco
+        }
+        d = d + 1
+    }
+    yuxadalo baqderg
+}
+
+fnc print_primes(nums: [terah]) {
+    yazde("простые в списке:")
+    xilit any_found: bool = xarco
+    yallalc n chu nums {
+        nagah sanna is_prime(n) {
+            yazde("  {n}")
+            any_found = baqderg
+        }
+    }
+    nagah sanna !any_found {
+        yazde("  (нет)")
+    }
+}
+
+fnc kort() {
+    xilit nums: [terah] = [7, 3, 11, 4, 8, 15, 2, 9, 13, 6]
+
+    yazde("=== статистика массива ===")
+    yazde("элементы:")
+    yallalc n chu nums {
+        yazde("  {n}")
+    }
+
+    xilit total: terah = sum(nums)
+    xilit avg: daqosh = average(nums)
+    xilit lo: terah = find_min(nums)
+    xilit hi: terah = find_max(nums)
+    xilit ev: terah = count_even(nums)
+    xilit n_total: terah = baram(nums)
+
+    yazde("")
+    yazde("количество: {n_total}")
+    yazde("сумма: {total}")
+    yazde("среднее: {avg}")
+    yazde("минимум: {lo}")
+    yazde("максимум: {hi}")
+    yazde("чётных: {ev}")
+
+    yazde("")
+    print_primes(nums)
+}

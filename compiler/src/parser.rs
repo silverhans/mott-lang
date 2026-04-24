@@ -501,6 +501,23 @@ impl Parser {
                 )?;
                 Ok(Expr::ParseDaqosh(Box::new(inner)))
             }
+            TokenKind::ToTerah => {
+                // `to_terah(x)` — numeric conversion, call-shaped like the
+                // parse_* and baram primaries above. Codegen lowers it to
+                // a C cast; no runtime function involved.
+                self.advance();
+                self.expect(&TokenKind::LParen, "expected `(` after `to_terah`")?;
+                let inner = self.parse_expr()?;
+                self.expect(&TokenKind::RParen, "expected `)` after `to_terah(...)`")?;
+                Ok(Expr::ToTerah(Box::new(inner)))
+            }
+            TokenKind::ToDaqosh => {
+                self.advance();
+                self.expect(&TokenKind::LParen, "expected `(` after `to_daqosh`")?;
+                let inner = self.parse_expr()?;
+                self.expect(&TokenKind::RParen, "expected `)` after `to_daqosh(...)`")?;
+                Ok(Expr::ToDaqosh(Box::new(inner)))
+            }
             other => Err(Error::Parse {
                 line,
                 col,
@@ -1187,6 +1204,34 @@ mod tests {
         // usable identifier, only a call-shaped primary.
         let err = parse_source("fnc kort() { xilit n: terah = parse_terah }").unwrap_err();
         assert!(format!("{}", err).contains("`(`"));
+    }
+
+    #[test]
+    fn to_terah_parses_as_to_terah_expr() {
+        let p = parse_ok(
+            r#"fnc kort() {
+                xilit n: terah = to_terah(3.7)
+            }"#,
+        );
+        let f = only_function(&p);
+        let Stmt::Let { value, .. } = &f.body.stmts[0] else {
+            panic!("expected Let");
+        };
+        assert!(matches!(value, Expr::ToTerah(_)));
+    }
+
+    #[test]
+    fn to_daqosh_parses_as_to_daqosh_expr() {
+        let p = parse_ok(
+            r#"fnc kort() {
+                xilit x: daqosh = to_daqosh(42)
+            }"#,
+        );
+        let f = only_function(&p);
+        let Stmt::Let { value, .. } = &f.body.stmts[0] else {
+            panic!("expected Let");
+        };
+        assert!(matches!(value, Expr::ToDaqosh(_)));
     }
 
     #[test]

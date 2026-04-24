@@ -131,6 +131,14 @@ pub enum Expr {
     /// `parse_daqosh(s)` — same as ParseTerah, but for daqosh. Uses strtod
     /// so accepts the usual float forms (decimal, exponent, infinity, nan).
     ParseDaqosh(Box<Expr>),
+    /// `to_terah(x)` — numeric -> terah. Lowered to a C cast; truncates
+    /// toward zero for floats. Out-of-range floats (`inf`, `nan`, or
+    /// values above `int64` max) are UB per C — a runtime-checked variant
+    /// will come with Result.
+    ToTerah(Box<Expr>),
+    /// `to_daqosh(x)` — numeric -> daqosh. Lowered to a C cast. Converting
+    /// large int64 values loses precision (standard IEEE 754 behavior).
+    ToDaqosh(Box<Expr>),
 }
 
 #[derive(Debug, Clone, Copy)]

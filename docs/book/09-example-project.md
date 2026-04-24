@@ -24,38 +24,16 @@ fnc sum(nums: [terah]) -> terah {
 }
 
 fnc average(nums: [terah]) -> daqosh {
-    // преобразуем сумму в daqosh через временную переменную —
-    // в MVP нет явных конверсий; умножение на 1.0 даст double.
-    xilit s: terah = sum(nums)
+    xilit total: terah = sum(nums)
     xilit n: terah = baram(nums)
-    xilit s_d: daqosh = 0.0
-    yallalc x chu nums {
-        s_d = s_d + 1.0            // просто считаем дабл-копию суммы
-    }
-    // хм, это не сумма, это длина. давайте напрямую считаем дабл-сумму:
-    xilit total: daqosh = 0.0
-    yallalc x chu nums {
-        total = total + 1.0 * 1.0  // без кастов мы не сможем сложить terah+daqosh
-    }
-    // ... сложно без кастов!
+    // terah / terah даст terah (с потерей дробной части), а нам нужен
+    // float. to_daqosh поднимает целое в daqosh — после этого деление
+    // идёт по плавающей точке.
+    yuxadalo to_daqosh(total) / to_daqosh(n)
 }
 ```
 
-**Ой.** Попались на реальное ограничение MVP: нет преобразований между `terah` и `daqosh`. Значит "среднее" как `daqosh` мы посчитать сейчас не можем — получим либо целочисленный результат (`sum / n` как `terah`), либо надо всё переписывать на `daqosh`.
-
-Честнее сделать "среднее, округлённое вниз":
-
-```mott
-fnc average_floor(nums: [terah]) -> terah {
-    xilit total: terah = 0
-    yallalc n chu nums {
-        total = total + n
-    }
-    yuxadalo total / baram(nums)
-}
-```
-
-Это реальное ограничение, с которым сталкивается любой программист на молодом языке. В v0.3+ добавим `to_daqosh(x: terah) -> daqosh`.
+Встроенные `to_terah` и `to_daqosh` — конверсии между числовыми типами. `to_daqosh(42)` даёт `42.0`. `to_terah(3.7)` даёт `3` (отбрасывает дробную часть, округление к нулю). Обе — просто касты в C, без рантайма; никакие ошибки не бросают.
 
 ### Шаг 2. Минимум и максимум
 
@@ -146,7 +124,7 @@ fnc kort() {
     }
 
     xilit total: terah = sum(nums)
-    xilit avg: terah = average_floor(nums)
+    xilit avg: daqosh = average(nums)
     xilit lo: terah = find_min(nums)
     xilit hi: terah = find_max(nums)
     xilit ev: terah = count_even(nums)
@@ -155,7 +133,7 @@ fnc kort() {
     yazde("")
     yazde("количество: {n_total}")
     yazde("сумма: {total}")
-    yazde("среднее (floor): {avg}")
+    yazde("среднее: {avg}")
     yazde("минимум: {lo}")
     yazde("максимум: {hi}")
     yazde("чётных: {ev}")
@@ -178,8 +156,8 @@ fnc sum(nums: [terah]) -> terah {
     yuxadalo total
 }
 
-fnc average_floor(nums: [terah]) -> terah {
-    yuxadalo sum(nums) / baram(nums)
+fnc average(nums: [terah]) -> daqosh {
+    yuxadalo to_daqosh(sum(nums)) / to_daqosh(baram(nums))
 }
 
 fnc find_min(nums: [terah]) -> terah {
@@ -250,7 +228,7 @@ fnc kort() {
     }
 
     xilit total: terah = sum(nums)
-    xilit avg: terah = average_floor(nums)
+    xilit avg: daqosh = average(nums)
     xilit lo: terah = find_min(nums)
     xilit hi: terah = find_max(nums)
     xilit ev: terah = count_even(nums)
@@ -259,7 +237,7 @@ fnc kort() {
     yazde("")
     yazde("количество: {n_total}")
     yazde("сумма: {total}")
-    yazde("среднее (floor): {avg}")
+    yazde("среднее: {avg}")
     yazde("минимум: {lo}")
     yazde("максимум: {hi}")
     yazde("чётных: {ev}")
@@ -293,7 +271,7 @@ mott stats.mott -o stats && ./stats
 
 количество: 10
 сумма: 78
-среднее (floor): 7
+среднее: 7.8
 минимум: 2
 максимум: 15
 чётных: 4
@@ -321,14 +299,14 @@ mott stats.mott -o stats && ./stats
 - **Логические операторы** — `!any_found`, `==`, `<`, `>`
 - **Арифметика** — `+`, `/`, `%`
 - **Булевы литералы** — `baqderg`, `xarco`
+- **`to_daqosh`** — конверсия `terah` → `daqosh` для честного среднего
 
 Практически весь язык за одну программу!
 
 ## Что бы улучшить, будь у нас ещё фичи
 
 - **Обобщённый `min/max`** — если бы были функции-параметры.
-- **Среднее как `daqosh`** — если бы был `to_daqosh`.
-- **Интерактивный ввод** — можно было бы через `esha` запросить массив от пользователя (но нет парсинга чисел — сложно).
+- **Интерактивный ввод массива** — через `esha` + `parse_terah` уже можно читать отдельные числа, но массив неизвестной длины требует динамических массивов (`push`) — их пока нет.
 - **Выход на несколько уровней** — если нужно было вылезти сразу из всех циклов.
 
 Все эти улучшения — в roadmap языка. Но уже сейчас ты можешь написать нечто полезное.

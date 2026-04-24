@@ -21,6 +21,8 @@
 | `baram` | барам | длина массива/строки |
 | `parse_terah` | | `deshnash` → `terah` |
 | `parse_daqosh` | | `deshnash` → `daqosh` |
+| `to_terah` | | числовая конверсия → `terah` |
+| `to_daqosh` | | числовая конверсия → `daqosh` |
 | `baqderg` | бакъдерг | `true` |
 | `xarco` | харцо | `false` |
 | `a` | | постфиксное AND |
@@ -43,8 +45,8 @@
 ```
 fnc xilit yuxadalo yazde esha
 nagah sanna khi cqachunna yallalc chu
-sac khida baram parse_terah parse_daqosh baqderg xarco
-a ya
+sac khida baram parse_terah parse_daqosh to_terah to_daqosh
+baqderg xarco a ya
 terah bool deshnash daqosh
 ```
 
@@ -170,6 +172,16 @@ xilit line: deshnash = esha()          // одна строка с stdin
 xilit n: terah = parse_terah(line)     // строка → целое
 xilit x: daqosh = parse_daqosh(line)   // строка → float
 ```
+
+### Числовые конверсии
+
+```mott
+xilit x: daqosh = to_daqosh(42)        // 42 → 42.0
+xilit n: terah = to_terah(3.7)         // 3.7 → 3 (к нулю)
+xilit avg: daqosh = to_daqosh(sum) / to_daqosh(count)
+```
+
+Между `terah` и `daqosh` в обе стороны. На `deshnash`/`bool` не работает.
 
 ## Escape-последовательности в строках
 
