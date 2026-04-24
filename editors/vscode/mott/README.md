@@ -28,23 +28,31 @@ fnc kort() {
 
 ## Install (local development)
 
-Until the extension is published to the marketplace, install it from source. Pick the editor directory you use:
+Until the extension is published to the marketplace, package it and install the `.vsix` via your editor's CLI:
 
 ```sh
-# VS Code
-ln -sfn "$(pwd)/editors/vscode/mott" ~/.vscode/extensions/silverhans.mott-0.1.0
+# 1. Install the packager once, if you don't have it.
+npm install -g @vscode/vsce
 
-# Cursor
-ln -sfn "$(pwd)/editors/vscode/mott" ~/.cursor/extensions/silverhans.mott-0.1.0
+# 2. Build the .vsix from this directory.
+cd editors/vscode/mott
+vsce package
 
-# Windsurf / VSCodium etc. — same idea, check your editor's extensions dir.
+# 3. Install into your editor(s). Pick what you have:
+code --install-extension mott-0.1.0.vsix      # VS Code
+cursor --install-extension mott-0.1.0.vsix    # Cursor
 ```
 
-Reload the editor after symlinking (Cmd+Shift+P → *Developer: Reload Window*).
+If the `code` / `cursor` CLI isn't on your `$PATH`, use the full path from the app bundle, e.g. on macOS:
+`/Applications/Cursor.app/Contents/Resources/app/bin/cursor --install-extension mott-0.1.0.vsix`.
 
-For one-shot dev testing without symlinking:
+Reload the editor window after install (Cmd+Shift+P → *Developer: Reload Window*). You can verify installation with `code --list-extensions | grep mott`.
+
+> **Note:** dropping a symlink into `~/.vscode/extensions/` alone no longer works — recent VS Code versions rely on the registered-extensions list, not directory scanning. Use `--install-extension` above.
+
+For one-shot dev testing without installing (useful when iterating on the grammar):
 ```sh
-code --extensionDevelopmentPath="$(pwd)/editors/vscode/mott" .
+code --extensionDevelopmentPath="$(pwd)" .
 ```
 
 ## Building and running Mott files
