@@ -45,4 +45,8 @@ mott_str mott_str_from_bool(bool v);
  * compound-literal array. */
 mott_str mott_str_build(const mott_str *parts, size_t n);
 
+/* Byte-level equality. `==` and `!=` on `deshnash` lower to this (NOT to
+ * C's `==`, which would compare struct fields and usually miscompare). */
+bool mott_str_eq(mott_str a, mott_str b);
+
 #endif /* MOTT_RT_H */

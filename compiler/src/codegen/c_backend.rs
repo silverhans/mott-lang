@@ -165,6 +165,40 @@ impl Emitter {
         Ok(())
     }
 
+    /// Emit `callee(arg1, arg2, ...)` with full arity + type checking.
+    /// Callers that need the return type handle it separately; this helper
+    /// only produces the call expression itself so it can be reused by both
+    /// `emit_expr` (value context) and ExprStmt (discarded-result context).
+    fn emit_call(&mut self, callee: &str, args: &[Expr], sig: &FuncSig) -> Result<()> {
+        if sig.params.len() != args.len() {
+            return Err(Error::Codegen(format!(
+                "function `{}` expects {} args, got {}",
+                callee,
+                sig.params.len(),
+                args.len()
+            )));
+        }
+        self.write(callee);
+        self.write("(");
+        for (i, (arg, expected)) in args.iter().zip(sig.params.iter()).enumerate() {
+            if i > 0 {
+                self.write(", ");
+            }
+            let at = self.emit_expr(arg)?;
+            if at != *expected {
+                return Err(Error::Codegen(format!(
+                    "argument {} of `{}`: expected {}, got {}",
+                    i + 1,
+                    callee,
+                    type_name(*expected),
+                    type_name(at)
+                )));
+            }
+        }
+        self.write(")");
+        Ok(())
+    }
+
     /// Emit `if (cond) {...} [else ...]` without a leading indent, collapsing
     /// parser-desugared `khi nagah sanna` chains back into idiomatic C
     /// `else if`. Parser wraps each chained condition in a single-stmt block
@@ -327,6 +361,18 @@ impl Emitter {
             }
             Stmt::ExprStmt(e) => {
                 self.write_indent();
+                // Call to a void function is valid as a bare statement
+                // (result discarded) even though `emit_expr` refuses to
+                // produce one in a value-needing context. Handle it inline.
+                if let Expr::Call { callee, args } = e {
+                    if let Some(sig) = self.functions.get(callee).cloned() {
+                        if sig.return_type.is_none() {
+                            self.emit_call(callee, args, &sig)?;
+                            self.writeln(";");
+                            return Ok(());
+                        }
+                    }
+                }
                 self.emit_expr(e)?;
                 self.writeln(";");
             }
@@ -375,6 +421,34 @@ impl Emitter {
                 Ok(Type::Deshnash)
             }
             Expr::Binary { op, left, right } => {
+                // String equality can't use C's `==` on mott_str structs —
+                // that would just compare data pointers. Pre-check types and
+                // lower to a runtime call that does byte-level comparison.
+                if matches!(op, BinOp::Eq | BinOp::NotEq) {
+                    let lt_pre = self.infer(left)?;
+                    let rt_pre = self.infer(right)?;
+                    if lt_pre == Type::Deshnash || rt_pre == Type::Deshnash {
+                        if lt_pre != rt_pre {
+                            return Err(Error::Codegen(format!(
+                                "comparison type mismatch: {} vs {}",
+                                type_name(lt_pre),
+                                type_name(rt_pre)
+                            )));
+                        }
+                        let negate = matches!(op, BinOp::NotEq);
+                        if negate {
+                            self.write("(!mott_str_eq(");
+                        } else {
+                            self.write("mott_str_eq(");
+                        }
+                        self.emit_expr(left)?;
+                        self.write(", ");
+                        self.emit_expr(right)?;
+                        self.write(if negate { "))" } else { ")" });
+                        return Ok(Type::Bool);
+                    }
+                }
+
                 self.write("(");
                 let lt = self.emit_expr(left)?;
                 self.write(bin_op_str(*op));
@@ -403,17 +477,14 @@ impl Emitter {
                         Ok(lt)
                     }
                     BinOp::Eq | BinOp::NotEq => {
+                        // Deshnash case was handled above before entering the
+                        // generic path. Any remaining mismatch is a type error.
                         if lt != rt {
                             return Err(Error::Codegen(format!(
                                 "comparison type mismatch: {} vs {}",
                                 type_name(lt),
                                 type_name(rt)
                             )));
-                        }
-                        if lt == Type::Deshnash {
-                            return Err(Error::Codegen(
-                                "string equality is not yet supported".into(),
-                            ));
                         }
                         Ok(Type::Bool)
                     }
@@ -504,32 +575,9 @@ impl Emitter {
                     .get(callee)
                     .cloned()
                     .ok_or_else(|| Error::Codegen(format!("call to undefined function `{}`", callee)))?;
-                if sig.params.len() != args.len() {
-                    return Err(Error::Codegen(format!(
-                        "function `{}` expects {} args, got {}",
-                        callee,
-                        sig.params.len(),
-                        args.len()
-                    )));
-                }
-                self.write(callee);
-                self.write("(");
-                for (i, (arg, expected)) in args.iter().zip(sig.params.iter()).enumerate() {
-                    if i > 0 {
-                        self.write(", ");
-                    }
-                    let at = self.emit_expr(arg)?;
-                    if at != *expected {
-                        return Err(Error::Codegen(format!(
-                            "argument {} of `{}`: expected {}, got {}",
-                            i + 1,
-                            callee,
-                            type_name(*expected),
-                            type_name(at)
-                        )));
-                    }
-                }
-                self.write(")");
+                self.emit_call(callee, args, &sig)?;
+                // In expression position, void calls have no usable value.
+                // ExprStmt routes around this via its own path.
                 sig.return_type.ok_or_else(|| {
                     Error::Codegen(format!(
                         "function `{}` returns no value but its result is used",
@@ -948,6 +996,75 @@ fnc kort() {
 "#,
         );
         assert!(c.contains("break;"));
+    }
+
+    #[test]
+    fn string_equality_lowers_to_runtime_call() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit name: deshnash = "salam"
+    nagah sanna name == "salam" {
+        yazde("hi")
+    }
+}
+"#,
+        );
+        assert!(c.contains("mott_str_eq("), "got:\n{}", c);
+        // Importantly: should NOT emit bare `name == "salam"` infix on
+        // mott_str structs — that would be nonsense C.
+        assert!(!c.contains("name == MOTT_STR_LIT"), "got:\n{}", c);
+    }
+
+    #[test]
+    fn string_inequality_emits_negated_runtime_call() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit name: deshnash = "salam"
+    nagah sanna name != "marshalla" {
+        yazde("not marshalla")
+    }
+}
+"#,
+        );
+        assert!(c.contains("(!mott_str_eq("), "got:\n{}", c);
+    }
+
+    #[test]
+    fn string_eq_with_non_string_is_type_error() {
+        let err = compile(
+            r#"
+fnc kort() {
+    xilit s: deshnash = "x"
+    nagah sanna s == 5 {
+        yazde("nope")
+    }
+}
+"#,
+        )
+        .unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("type mismatch"), "got: {}", msg);
+    }
+
+    #[test]
+    fn string_ordering_is_still_rejected() {
+        // `<` / `>` on strings remains unsupported — we only added equality.
+        let err = compile(
+            r#"
+fnc kort() {
+    xilit lhs: deshnash = "x"
+    xilit rhs: deshnash = "y"
+    nagah sanna lhs < rhs {
+        yazde("x")
+    }
+}
+"#,
+        )
+        .unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("numeric"), "got: {}", msg);
     }
 
     #[test]

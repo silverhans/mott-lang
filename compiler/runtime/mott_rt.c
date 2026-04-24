@@ -69,6 +69,17 @@ mott_str mott_str_from_bool(bool v) {
 
 /* --- interpolation build --------------------------------------------- */
 
+bool mott_str_eq(mott_str a, mott_str b) {
+    if (a.len != b.len) {
+        return false;
+    }
+    if (a.len == 0) {
+        return true;
+    }
+    /* memcmp is UB with NULL even for length 0 — the guard above covers it. */
+    return memcmp(a.data, b.data, a.len) == 0;
+}
+
 mott_str mott_str_build(const mott_str *parts, size_t n) {
     size_t total = 0;
     for (size_t i = 0; i < n; i++) {
