@@ -13,7 +13,7 @@
 //! during emission so a `xilit x = 5;` doesn't require a separate sema pass.
 //! v0.2 will lift this into a real checker.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use crate::ast::{BinOp, Block, Expr, Function, Item, IterSource, Program, Stmt, Type, UnOp};
@@ -50,6 +50,11 @@ struct Emitter {
     /// `khida` only appear inside a loop — outside, they'd generate C that
     /// clang would reject, but we want to catch it with a mott-level error.
     loop_depth: usize,
+    /// Names of the current function's parameters. push/pop are rejected
+    /// on these because Mott arrays are value types sharing a buffer — a
+    /// realloc in push would invalidate the caller's pointer. Resetting on
+    /// every function entry (parameters don't leak across functions).
+    current_params: HashSet<String>,
 }
 
 impl Emitter {
@@ -74,6 +79,7 @@ impl Emitter {
             scopes: Vec::new(),
             functions,
             loop_depth: 0,
+            current_params: HashSet::new(),
         })
     }
 
@@ -149,6 +155,7 @@ impl Emitter {
         self.writeln(" {");
         self.indent += 1;
         self.push_scope();
+        self.current_params = f.params.iter().map(|p| p.name.clone()).collect();
         for p in &f.params {
             self.declare(&p.name, p.ty.clone());
         }
@@ -160,6 +167,7 @@ impl Emitter {
             self.writeln("return 0;");
         }
         self.pop_scope();
+        self.current_params.clear();
         self.indent -= 1;
         self.writeln("}");
         Ok(())
@@ -375,7 +383,23 @@ impl Emitter {
                     )));
                 }
                 self.write(&format!("{} {} = ", type_to_c(&actual_ty), name));
-                let val_ty = self.emit_expr(value)?;
+                // Empty array literal `[]` can only be typed from the
+                // annotation — infer() / emit_expr() alone would fail on
+                // element-type inference. Handle it here so it Just Works
+                // in the natural `xilit nums: [terah] = []` case.
+                let val_ty = if let (Expr::ArrayLit(elems), Type::Array(elem_ty)) =
+                    (value, &actual_ty)
+                {
+                    if elems.is_empty() {
+                        let ctor = array_ctor_name(elem_ty);
+                        self.write(&format!("{}(0, NULL)", ctor));
+                        actual_ty.clone()
+                    } else {
+                        self.emit_expr(value)?
+                    }
+                } else {
+                    self.emit_expr(value)?
+                };
                 if ty.is_some() && val_ty != actual_ty {
                     return Err(Error::Codegen(format!(
                         "type mismatch: `{}` declared as {} but initializer is {}",
@@ -536,6 +560,46 @@ impl Emitter {
             }
             Stmt::ForEach { var, iter, body } => {
                 self.emit_for_each(var, iter, body)?;
+            }
+            Stmt::Push { name, value } => {
+                let arr_ty = self.lookup(name).ok_or_else(|| {
+                    Error::Codegen(format!("push on undefined variable `{}`", name))
+                })?;
+                let elem_ty = match &arr_ty {
+                    Type::Array(inner) => (**inner).clone(),
+                    other => {
+                        return Err(Error::Codegen(format!(
+                            "`push` needs an array, but `{}` is {}",
+                            name,
+                            type_name(other)
+                        )));
+                    }
+                };
+                // Aliasing footgun: Mott passes arrays by value (struct
+                // copy) but data pointer is shared. push can realloc,
+                // invalidating the caller's view. Reject on params until
+                // we have references.
+                if self.current_params.contains(name) {
+                    return Err(Error::Codegen(format!(
+                        "cannot push to `{}`: it's a function parameter, \
+                         and mott doesn't have references yet — push/pop \
+                         only work on locals",
+                        name
+                    )));
+                }
+                let push_fn = array_push_name(&elem_ty);
+                self.write_indent();
+                self.write(&format!("{}(&{}, ", push_fn, name));
+                let val_ty = self.emit_expr(value)?;
+                if val_ty != elem_ty {
+                    return Err(Error::Codegen(format!(
+                        "push type mismatch: `{}` holds {}, got {}",
+                        name,
+                        type_name(&elem_ty),
+                        type_name(&val_ty)
+                    )));
+                }
+                self.writeln(");");
             }
         }
         Ok(())
@@ -751,6 +815,17 @@ impl Emitter {
                 Ok(Type::Deshnash)
             }
             Expr::ArrayLit(elems) => {
+                if elems.is_empty() {
+                    // Empty literals are only valid when the context supplies
+                    // the type — Stmt::Let handles that path directly. Hitting
+                    // this here means someone wrote `[]` in a context where we
+                    // can't infer it (a function arg, a `yazde(...)` target, etc).
+                    return Err(Error::Codegen(
+                        "empty array literal `[]` needs a type annotation; \
+                         write `xilit nums: [terah] = []` or use `[1, 2, 3]`"
+                            .into(),
+                    ));
+                }
                 // Determine element type from the first element; all others
                 // must match. Reject nested arrays for now.
                 let first_ty = self.infer(&elems[0])?;
@@ -877,6 +952,31 @@ impl Emitter {
                 self.write("))");
                 Ok(Type::Daqosh)
             }
+            Expr::Pop(name) => {
+                let arr_ty = self.lookup(name).ok_or_else(|| {
+                    Error::Codegen(format!("pop on undefined variable `{}`", name))
+                })?;
+                let elem_ty = match &arr_ty {
+                    Type::Array(inner) => (**inner).clone(),
+                    other => {
+                        return Err(Error::Codegen(format!(
+                            "`pop` needs an array, but `{}` is {}",
+                            name,
+                            type_name(other)
+                        )));
+                    }
+                };
+                if self.current_params.contains(name) {
+                    return Err(Error::Codegen(format!(
+                        "cannot pop from `{}`: it's a function parameter \
+                         (see push error message for why)",
+                        name
+                    )));
+                }
+                let pop_fn = array_pop_name(&elem_ty);
+                self.write(&format!("{}(&{})", pop_fn, name));
+                Ok(elem_ty)
+            }
         }
     }
 
@@ -971,7 +1071,9 @@ impl Emitter {
             Expr::ArrayLit(elems) => {
                 if elems.is_empty() {
                     return Err(Error::Codegen(
-                        "empty array literal has no inferable type".into(),
+                        "empty array literal `[]` needs a type annotation; \
+                         its element type can't be inferred on its own"
+                            .into(),
                     ));
                 }
                 let t = self.infer(&elems[0])?;
@@ -992,6 +1094,19 @@ impl Emitter {
             Expr::ParseDaqosh(_) => Ok(Type::Daqosh),
             Expr::ToTerah(_) => Ok(Type::Terah),
             Expr::ToDaqosh(_) => Ok(Type::Daqosh),
+            Expr::Pop(name) => {
+                let arr_ty = self.lookup(name).ok_or_else(|| {
+                    Error::Codegen(format!("pop on undefined variable `{}`", name))
+                })?;
+                match arr_ty {
+                    Type::Array(inner) => Ok(*inner),
+                    other => Err(Error::Codegen(format!(
+                        "`pop` needs an array, but `{}` is {}",
+                        name,
+                        type_name(&other)
+                    ))),
+                }
+            }
         }
     }
 
@@ -1088,6 +1203,26 @@ fn array_ctor_name(t: &Type) -> &'static str {
         Type::Bool => "mott_arr_bool_new",
         Type::Deshnash => "mott_arr_deshnash_new",
         Type::Array(_) => "mott_arr_nested_new", // unreachable today
+    }
+}
+
+fn array_push_name(t: &Type) -> &'static str {
+    match t {
+        Type::Terah => "mott_arr_terah_push",
+        Type::Daqosh => "mott_arr_daqosh_push",
+        Type::Bool => "mott_arr_bool_push",
+        Type::Deshnash => "mott_arr_deshnash_push",
+        Type::Array(_) => "mott_arr_nested_push", // unreachable today
+    }
+}
+
+fn array_pop_name(t: &Type) -> &'static str {
+    match t {
+        Type::Terah => "mott_arr_terah_pop",
+        Type::Daqosh => "mott_arr_daqosh_pop",
+        Type::Bool => "mott_arr_bool_pop",
+        Type::Deshnash => "mott_arr_deshnash_pop",
+        Type::Array(_) => "mott_arr_nested_pop", // unreachable today
     }
 }
 
@@ -1636,6 +1771,125 @@ fnc kort() {
         .unwrap_err();
         let msg = format!("{}", err);
         assert!(msg.contains("numeric"), "got: {}", msg);
+    }
+
+    #[test]
+    fn push_emits_runtime_call_with_address() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit nums: [terah] = [1, 2]
+    push(nums, 3)
+}
+"#,
+        );
+        assert!(c.contains("mott_arr_terah_push(&nums, "), "got:\n{}", c);
+    }
+
+    #[test]
+    fn pop_emits_runtime_call_with_address() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit nums: [terah] = [1, 2, 3]
+    xilit last: terah = pop(nums)
+    yazde(last)
+}
+"#,
+        );
+        assert!(c.contains("mott_arr_terah_pop(&nums)"), "got:\n{}", c);
+    }
+
+    #[test]
+    fn push_type_mismatch_rejected() {
+        let err = compile(
+            r#"
+fnc kort() {
+    xilit nums: [terah] = [1]
+    push(nums, baqderg)
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{}", err).contains("push type mismatch"));
+    }
+
+    #[test]
+    fn push_on_non_array_rejected() {
+        let err = compile(
+            r#"
+fnc kort() {
+    xilit x: terah = 5
+    push(x, 1)
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{}", err).contains("needs an array"));
+    }
+
+    #[test]
+    fn push_on_parameter_rejected() {
+        // Mott has no references yet; aliasing makes push-to-parameter UB.
+        // Catch it at codegen with a clear message.
+        let err = compile(
+            r#"
+fnc helper(arr: [terah]) {
+    push(arr, 1)
+}
+fnc kort() {
+    xilit nums: [terah] = [1]
+    helper(nums)
+}
+"#,
+        )
+        .unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("function parameter"), "got: {}", msg);
+    }
+
+    #[test]
+    fn pop_on_parameter_rejected() {
+        let err = compile(
+            r#"
+fnc helper(arr: [terah]) -> terah {
+    yuxadalo pop(arr)
+}
+fnc kort() {
+    xilit nums: [terah] = [1]
+    yazde(helper(nums))
+}
+"#,
+        )
+        .unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("function parameter"), "got: {}", msg);
+    }
+
+    #[test]
+    fn empty_array_literal_with_annotation_emits_zero_new() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit nums: [terah] = []
+    push(nums, 1)
+}
+"#,
+        );
+        assert!(c.contains("mott_arr_terah_new(0, NULL)"), "got:\n{}", c);
+    }
+
+    #[test]
+    fn empty_array_literal_without_annotation_errors() {
+        let err = compile(
+            r#"
+fnc kort() {
+    xilit nums = []
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{}", err).contains("type annotation"));
     }
 
     #[test]

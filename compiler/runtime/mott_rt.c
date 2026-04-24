@@ -86,26 +86,62 @@ bool mott_str_eq(mott_str a, mott_str b) {
 
 /* --- Arrays --- */
 
-#define MOTT_DEFINE_ARR_NEW(name, elem_t)                                      \
+/* Initial capacity lower bound — so a freshly-built array from `[1,2]`
+ * can take a couple of pushes without an immediate realloc. */
+#define MOTT_ARR_MIN_CAP 4
+
+static void *mott__xmalloc(size_t n) {
+    void *p = malloc(n);
+    if (!p) {
+        fputs("mott runtime: out of memory\n", stderr);
+        abort();
+    }
+    return p;
+}
+
+static void *mott__xrealloc(void *p, size_t n) {
+    void *r = realloc(p, n);
+    if (!r) {
+        fputs("mott runtime: out of memory\n", stderr);
+        abort();
+    }
+    return r;
+}
+
+/* Constructor, push, pop for one element type. Same pattern repeated for
+ * every primitive — keeps the codegen side dead simple (pick by name). */
+#define MOTT_DEFINE_ARR_OPS(name, elem_t)                                      \
     mott_arr_##name mott_arr_##name##_new(size_t n, const elem_t *src) {       \
-        elem_t *data = NULL;                                                   \
+        size_t cap = n > MOTT_ARR_MIN_CAP ? n : MOTT_ARR_MIN_CAP;              \
+        elem_t *data = (elem_t *)mott__xmalloc(cap * sizeof(elem_t));          \
         if (n > 0) {                                                           \
-            data = (elem_t *)malloc(n * sizeof(elem_t));                       \
-            if (!data) {                                                       \
-                fputs("mott runtime: out of memory\n", stderr);                \
-                abort();                                                       \
-            }                                                                  \
             memcpy(data, src, n * sizeof(elem_t));                             \
         }                                                                      \
-        return (mott_arr_##name){ .data = data, .len = n };                    \
+        return (mott_arr_##name){ .data = data, .len = n, .cap = cap };        \
+    }                                                                          \
+    void mott_arr_##name##_push(mott_arr_##name *a, elem_t x) {                \
+        if (a->len == a->cap) {                                                \
+            size_t new_cap = a->cap * 2;                                       \
+            a->data = (elem_t *)mott__xrealloc(                                \
+                a->data, new_cap * sizeof(elem_t));                            \
+            a->cap = new_cap;                                                  \
+        }                                                                      \
+        a->data[a->len++] = x;                                                 \
+    }                                                                          \
+    elem_t mott_arr_##name##_pop(mott_arr_##name *a) {                         \
+        if (a->len == 0) {                                                     \
+            fputs("mott runtime: pop on empty array\n", stderr);               \
+            abort();                                                           \
+        }                                                                      \
+        return a->data[--a->len];                                              \
     }
 
-MOTT_DEFINE_ARR_NEW(terah,    int64_t)
-MOTT_DEFINE_ARR_NEW(daqosh,   double)
-MOTT_DEFINE_ARR_NEW(bool,     bool)
-MOTT_DEFINE_ARR_NEW(deshnash, mott_str)
+MOTT_DEFINE_ARR_OPS(terah,    int64_t)
+MOTT_DEFINE_ARR_OPS(daqosh,   double)
+MOTT_DEFINE_ARR_OPS(bool,     bool)
+MOTT_DEFINE_ARR_OPS(deshnash, mott_str)
 
-#undef MOTT_DEFINE_ARR_NEW
+#undef MOTT_DEFINE_ARR_OPS
 
 mott_str mott_input(void) {
     /* getline allocates and grows as needed — standard POSIX 2008 since

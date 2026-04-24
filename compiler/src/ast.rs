@@ -78,6 +78,10 @@ pub enum Stmt {
     Return(Option<Expr>),
     Print(Expr),
     ExprStmt(Expr),
+    /// `push(arr, value)` — append to a dynamic array. Parser constrains
+    /// the first arg to a bare identifier because we need it as an
+    /// l-value (the runtime takes `&arr` to update data/len/cap atomically).
+    Push { name: String, value: Expr },
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +143,10 @@ pub enum Expr {
     /// `to_daqosh(x)` — numeric -> daqosh. Lowered to a C cast. Converting
     /// large int64 values loses precision (standard IEEE 754 behavior).
     ToDaqosh(Box<Expr>),
+    /// `pop(arr)` — remove and return the last element of a dynamic array.
+    /// Same l-value restriction as push: first arg must be a bare ident so
+    /// the runtime can update len in place. Runtime-aborts on empty array.
+    Pop(String),
 }
 
 #[derive(Debug, Clone, Copy)]

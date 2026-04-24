@@ -1,0 +1,32 @@
+// Читает строки со stdin пока не встретит пустую (или EOF),
+// парсит каждую как число, кладёт в динамический массив.
+// В конце — печатает длину и все числа.
+//
+// Запусти: printf "3\n7\n1\n4\n\n" | mott examples/dyn-array.mott -o /tmp/d && /tmp/d
+//
+// Демонстрирует push на пустом массиве, baram, yallalc.
+
+fnc kort() {
+    xilit nums: [terah] = []
+    yazde("введи числа, по одному на строку (пустая строка — конец):")
+    cqachunna baqderg {
+        xilit line: deshnash = esha()
+        nagah sanna line == "" {
+            sac
+        }
+        push(nums, parse_terah(line))
+    }
+
+    xilit n: terah = baram(nums)
+    yazde("получил {n} чисел:")
+    yallalc x chu nums {
+        yazde("  {x}")
+    }
+
+    nagah sanna n > 0 {
+        xilit last: terah = pop(nums)
+        yazde("последнее было: {last}")
+        xilit after: terah = baram(nums)
+        yazde("после pop осталось: {after}")
+    }
+}

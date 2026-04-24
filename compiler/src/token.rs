@@ -24,6 +24,8 @@ pub enum TokenKind {
     ParseDaqosh,
     ToTerah,
     ToDaqosh,
+    Push,
+    Pop,
     Baqderg,
     Xarco,
     A,

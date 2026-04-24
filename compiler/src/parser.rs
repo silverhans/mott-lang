@@ -106,6 +106,7 @@ impl Parser {
             TokenKind::Khida => self.parse_continue(),
             TokenKind::Yuxadalo => self.parse_return(),
             TokenKind::Yazde => self.parse_print(),
+            TokenKind::Push => self.parse_push(),
             TokenKind::Ident(_) if self.peek_kind_at(1) == Some(&TokenKind::Assign) => {
                 self.parse_assign()
             }
@@ -247,6 +248,40 @@ impl Parser {
         };
         self.expect(&TokenKind::Semicolon, "expected `;` after return")?;
         Ok(Stmt::Return(value))
+    }
+
+    /// `push(IDENT, expr)` — statement form. First arg must be a bare
+    /// identifier so we can take its address in codegen. We reject
+    /// `push(arr[0], x)` and `push(some_expr(), x)` here at parse time
+    /// rather than in codegen for a clearer error.
+    fn parse_push(&mut self) -> Result<Stmt> {
+        self.expect(&TokenKind::Push, "expected `push`")?;
+        self.expect(&TokenKind::LParen, "expected `(` after `push`")?;
+        let name = self.expect_ident(
+            "first argument of `push` must be a variable name (got something else)",
+        )?;
+        // After the ident, anything other than `,` means the user wrote a
+        // complex l-value like `push(nums[0], ...)` or `push(f(), ...)`.
+        // Give a pointed error rather than letting expect(Comma) complain
+        // about the mysterious next token.
+        if !self.check(&TokenKind::Comma) {
+            let (line, col) = self.peek_pos();
+            return Err(Error::Parse {
+                line,
+                col,
+                message: format!(
+                    "first argument of `push` must be a bare variable name — \
+                     got `{}` followed by {:?}",
+                    name,
+                    self.peek()
+                ),
+            });
+        }
+        self.advance(); // consume the comma
+        let value = self.parse_expr()?;
+        self.expect(&TokenKind::RParen, "expected `)` after push arguments")?;
+        self.expect(&TokenKind::Semicolon, "expected `;` after push")?;
+        Ok(Stmt::Push { name, value })
     }
 
     fn parse_print(&mut self) -> Result<Stmt> {
@@ -434,25 +469,20 @@ impl Parser {
                 Ok(e)
             }
             TokenKind::LBracket => {
-                // Array literal `[e1, e2, ...]`. Require at least one element
-                // so the element type can be inferred without annotation.
+                // Array literal `[e1, e2, ...]`. Empty literals `[]` now
+                // parse — the codegen accepts them when the surrounding
+                // context provides a type (e.g. `xilit x: [terah] = []`);
+                // without a type hint, emission errors with a clear message.
                 self.advance();
                 let mut elems = Vec::new();
-                if self.check(&TokenKind::RBracket) {
-                    return Err(Error::Parse {
-                        line,
-                        col,
-                        message: "empty array literals aren't supported yet; \
-                                  the element type can't be inferred"
-                            .into(),
-                    });
-                }
-                elems.push(self.parse_expr()?);
-                while self.matches(&TokenKind::Comma) {
-                    if self.check(&TokenKind::RBracket) {
-                        break; // trailing comma allowed
-                    }
+                if !self.check(&TokenKind::RBracket) {
                     elems.push(self.parse_expr()?);
+                    while self.matches(&TokenKind::Comma) {
+                        if self.check(&TokenKind::RBracket) {
+                            break; // trailing comma allowed
+                        }
+                        elems.push(self.parse_expr()?);
+                    }
                 }
                 self.expect(&TokenKind::RBracket, "expected `]` in array literal")?;
                 Ok(Expr::ArrayLit(elems))
@@ -517,6 +547,19 @@ impl Parser {
                 let inner = self.parse_expr()?;
                 self.expect(&TokenKind::RParen, "expected `)` after `to_daqosh(...)`")?;
                 Ok(Expr::ToDaqosh(Box::new(inner)))
+            }
+            TokenKind::Pop => {
+                // `pop(IDENT)` — expression form. Same l-value restriction
+                // as push: arg must be a bare identifier. We could
+                // theoretically accept `pop(arr[i])` later (remove by
+                // index) but that's a different operation.
+                self.advance();
+                self.expect(&TokenKind::LParen, "expected `(` after `pop`")?;
+                let name = self.expect_ident(
+                    "argument of `pop` must be a variable name (got something else)",
+                )?;
+                self.expect(&TokenKind::RParen, "expected `)` after `pop(...)`")?;
+                Ok(Expr::Pop(name))
             }
             other => Err(Error::Parse {
                 line,
@@ -1218,6 +1261,68 @@ mod tests {
             panic!("expected Let");
         };
         assert!(matches!(value, Expr::ToTerah(_)));
+    }
+
+    #[test]
+    fn push_parses_as_stmt_with_ident_target() {
+        let p = parse_ok(
+            r#"fnc kort() {
+                xilit nums: [terah] = [1]
+                push(nums, 42)
+            }"#,
+        );
+        let f = only_function(&p);
+        let Stmt::Push { name, value } = &f.body.stmts[1] else {
+            panic!("expected Push stmt");
+        };
+        assert_eq!(name, "nums");
+        assert!(matches!(value, Expr::Integer(42)));
+    }
+
+    #[test]
+    fn push_with_non_identifier_target_errors() {
+        // `push(arr[i], x)` — complex l-value — should give a targeted
+        // error rather than a confusing "expected comma" complaint.
+        let err = parse_source(
+            r#"fnc kort() {
+                xilit nums: [terah] = [1]
+                push(nums[0], 2)
+            }"#,
+        )
+        .unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("bare variable name"), "got: {}", msg);
+    }
+
+    #[test]
+    fn pop_parses_as_expression() {
+        let p = parse_ok(
+            r#"fnc kort() {
+                xilit nums: [terah] = [1, 2, 3]
+                xilit last: terah = pop(nums)
+            }"#,
+        );
+        let f = only_function(&p);
+        let Stmt::Let { value, .. } = &f.body.stmts[1] else {
+            panic!("expected Let");
+        };
+        assert!(matches!(value, Expr::Pop(n) if n == "nums"));
+    }
+
+    #[test]
+    fn empty_array_literal_parses() {
+        // [] is now valid at parse time; the codegen only accepts it in
+        // typed-annotation contexts, but parsing it succeeds unconditionally.
+        let p = parse_ok(
+            r#"fnc kort() {
+                xilit nums: [terah] = []
+            }"#,
+        );
+        let f = only_function(&p);
+        let Stmt::Let { value, .. } = &f.body.stmts[0] else {
+            panic!("expected Let");
+        };
+        assert!(matches!(value, Expr::ArrayLit(elems) if elems.is_empty()));
     }
 
     #[test]

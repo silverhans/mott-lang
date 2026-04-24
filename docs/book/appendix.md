@@ -23,6 +23,8 @@
 | `parse_daqosh` | | `deshnash` → `daqosh` |
 | `to_terah` | | числовая конверсия → `terah` |
 | `to_daqosh` | | числовая конверсия → `daqosh` |
+| `push` | | добавить элемент в массив |
+| `pop` | | удалить и вернуть последний элемент |
 | `baqderg` | бакъдерг | `true` |
 | `xarco` | харцо | `false` |
 | `a` | | постфиксное AND |
@@ -46,7 +48,7 @@
 fnc xilit yuxadalo yazde esha
 nagah sanna khi cqachunna yallalc chu
 sac khida baram parse_terah parse_daqosh to_terah to_daqosh
-baqderg xarco a ya
+push pop baqderg xarco a ya
 terah bool deshnash daqosh
 ```
 
@@ -132,10 +134,16 @@ khida                                  // continue
 
 ```mott
 xilit nums: [terah] = [1, 2, 3]
+xilit empty: [terah] = []              // пустой (нужна аннотация)
 xilit first = nums[0]                  // read
 nums[0] = 42                           // write
 xilit len = baram(nums)                // length
+
+push(nums, 4)                          // grow (только на локальных!)
+xilit last: terah = pop(nums)          // shrink + return
 ```
+
+`push`/`pop` — только на локальных переменных, не на параметрах (нет ссылок). `pop` на пустом — abort.
 
 ### Строки
 
@@ -212,9 +220,9 @@ xilit avg: daqosh = to_daqosh(sum) / to_daqosh(count)
 Это запланировано в v0.3+, но в v0.2 работать не будет:
 
 - `for` с range'ом вне `yallalc` (ranges — не значения)
-- Пустой литерал массива `[]`
+- Пустой литерал массива `[]` без аннотации типа (с аннотацией — работает)
 - Вложенные массивы `[[T]]`
-- `push`/`pop`/`append` на массивах
+- `append` / объединение массивов (`push`/`pop` уже есть)
 - Конкатенация строк через `+`
 - Конверсии между числовыми типами (`to_daqosh`, `to_terah`)
 - Методы (`arr.len`, `s.upper`) — пока только функции

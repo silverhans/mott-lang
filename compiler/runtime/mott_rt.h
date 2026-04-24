@@ -69,26 +69,44 @@ double  mott_parse_daqosh(mott_str s);
 
 /* --- Arrays ------------------------------------------------------------
  *
- * One struct per element type (until we get generics). All share the same
- * layout — `data` pointer followed by `len` — so `baram(arr)` in the
- * language always lowers to `arr.len` regardless of element type.
+ * One struct per element type (until we get generics). All three fields —
+ * `data`, `len`, `cap` — are in the same order for every element type so
+ * the codegen can access them uniformly. `baram(arr)` lowers to `.len`
+ * the same way it does for `mott_str` (which only has data+len, no cap —
+ * strings are still immutable).
  *
- * Arrays in MVP are "fixed after creation": length is set when the literal
- * is evaluated and never changes. No push/pop, no grow. Element mutation
- * via `arr[i] = x` is allowed.
+ * Memory model:
+ *   - `*_new` allocates cap = max(n, 4) and memcpys the seed elements in.
+ *   - `*_push` grows cap (doubling) on overflow via realloc.
+ *   - `*_pop` only shrinks `len` — we don't release capacity.
+ *   - All buffers leak until we get a proper allocator / GC.
  *
- * Memory: the `*_new` helpers malloc a buffer, memcpy the provided
- * elements in, and return a struct pointing at the buffer. Leaked in MVP,
- * same policy as strings and mott_str_build. */
+ * Aliasing caveat: mott passes arrays by value (struct copy), but all
+ * copies share the same `data` pointer. If you push in a function that
+ * received the array as a parameter, the realloc invalidates the
+ * caller's pointer. The frontend rejects push/pop on parameters to avoid
+ * this footgun; it'll get sorted when we add references / ownership. */
 
-typedef struct { int64_t  *data; size_t len; } mott_arr_terah;
-typedef struct { double   *data; size_t len; } mott_arr_daqosh;
-typedef struct { bool     *data; size_t len; } mott_arr_bool;
-typedef struct { mott_str *data; size_t len; } mott_arr_deshnash;
+typedef struct { int64_t  *data; size_t len; size_t cap; } mott_arr_terah;
+typedef struct { double   *data; size_t len; size_t cap; } mott_arr_daqosh;
+typedef struct { bool     *data; size_t len; size_t cap; } mott_arr_bool;
+typedef struct { mott_str *data; size_t len; size_t cap; } mott_arr_deshnash;
 
 mott_arr_terah    mott_arr_terah_new   (size_t n, const int64_t  *src);
 mott_arr_daqosh   mott_arr_daqosh_new  (size_t n, const double   *src);
 mott_arr_bool     mott_arr_bool_new    (size_t n, const bool     *src);
 mott_arr_deshnash mott_arr_deshnash_new(size_t n, const mott_str *src);
+
+/* push / pop. Take a pointer to the struct so realloc can move `data`
+ * in place and `len`/`cap` stay in sync. pop on an empty array aborts. */
+void    mott_arr_terah_push   (mott_arr_terah    *a, int64_t  x);
+void    mott_arr_daqosh_push  (mott_arr_daqosh   *a, double   x);
+void    mott_arr_bool_push    (mott_arr_bool     *a, bool     x);
+void    mott_arr_deshnash_push(mott_arr_deshnash *a, mott_str x);
+
+int64_t  mott_arr_terah_pop   (mott_arr_terah    *a);
+double   mott_arr_daqosh_pop  (mott_arr_daqosh   *a);
+bool     mott_arr_bool_pop    (mott_arr_bool     *a);
+mott_str mott_arr_deshnash_pop(mott_arr_deshnash *a);
 
 #endif /* MOTT_RT_H */
