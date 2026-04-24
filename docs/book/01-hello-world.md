@@ -4,14 +4,14 @@
 
 ```mott
 fnc kort() {
-    yazde("Salam, dunya!")
+    yazde("Hello, World!")
 }
 ```
 
 Сохрани этот код в файл `hello.mott`, скомпилируй, запусти — и получишь:
 
 ```
-Salam, dunya!
+Hello, World!
 ```
 
 Дальше — как это всё настроить, и разбор того, что происходит в этих трёх строках.
@@ -43,7 +43,7 @@ usage: mott <file.mott> [-o OUT] [--emit-c] [--keep-c]
 
 ```mott
 fnc kort() {
-    yazde("Salam, dunya!")
+    yazde("Hello, World!")
 }
 ```
 
@@ -51,7 +51,7 @@ fnc kort() {
 
 ```sh
 mott hello.mott        # создаёт бинарник ./hello
-./hello                # -> Salam, dunya!
+./hello                # -> Hello, World!
 ```
 
 Хочешь посмотреть в какой C это транспилируется? Флаг `--emit-c`:
@@ -64,7 +64,7 @@ mott hello.mott --emit-c
 
 ```mott
 fnc kort() {
-    yazde("Salam, dunya!")
+    yazde("Hello, World!")
 }
 ```
 
@@ -78,7 +78,7 @@ fnc kort() {
 
 **`yazde(...)`** — встроенная функция вывода (аналог `print`). Печатает значение и добавляет перевод строки. От чеченского *"язде"* — "напиши".
 
-**`"Salam, dunya!"`** — строковой литерал. `salam` — "привет", `dunya` — "мир".
+**`"Hello, World!"`** — строковой литерал, обычное приветствие программиста. Можешь писать внутри кавычек что угодно, на любом языке — строки в Mott это UTF-8: `yazde("Salam, dunya!")` или `yazde("Маршалла хьо!")` работают так же.
 
 ## Несколько строк
 
@@ -86,7 +86,7 @@ fnc kort() {
 
 ```mott
 fnc kort() {
-    yazde("Salam, dunya!")
+    yazde("Hello, World!")
     yazde("Mott — это язык.")
     yazde("Привет из чеченского.")
 }
