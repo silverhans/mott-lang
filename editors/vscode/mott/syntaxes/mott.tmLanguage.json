@@ -66,7 +66,7 @@
     },
     "control-keyword": {
       "comment": "Two-word `nagah sanna` is intentional — matches the lexer's merged token.",
-      "match": "\\b(nagah\\s+sanna|khi|cqachunna|sac|khida|yuxadalo)\\b",
+      "match": "\\b(nagah\\s+sanna|khi|cqachunna|yallalc|chu|sac|khida|yuxadalo)\\b",
       "name": "keyword.control.mott"
     },
     "declaration-keyword": {
@@ -74,7 +74,7 @@
       "name": "keyword.other.mott"
     },
     "builtin-function": {
-      "match": "\\b(yazde)\\b",
+      "match": "\\b(yazde|esha|baram)\\b",
       "name": "support.function.builtin.mott"
     },
     "type": {

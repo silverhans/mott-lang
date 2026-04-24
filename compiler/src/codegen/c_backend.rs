@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use crate::ast::{BinOp, Block, Expr, Function, Item, Program, Stmt, Type, UnOp};
+use crate::ast::{BinOp, Block, Expr, Function, Item, IterSource, Program, Stmt, Type, UnOp};
 use crate::codegen::Backend;
 use crate::error::{Error, Result};
 use crate::token::StringPart;
@@ -58,8 +58,8 @@ impl Emitter {
         for item in &program.items {
             let Item::Function(f) = item;
             let sig = FuncSig {
-                params: f.params.iter().map(|p| p.ty).collect(),
-                return_type: f.return_type,
+                params: f.params.iter().map(|p| p.ty.clone()).collect(),
+                return_type: f.return_type.clone(),
             };
             if functions.insert(f.name.clone(), sig).is_some() {
                 return Err(Error::Codegen(format!(
@@ -112,9 +112,9 @@ impl Emitter {
     }
 
     fn emit_function_signature(&mut self, f: &Function) {
-        let ret = match f.return_type {
+        let ret = match &f.return_type {
             Some(t) => type_to_c(t),
-            None => "void",
+            None => "void".into(),
         };
         self.write(&format!("{} {}(", ret, f.name));
         if f.params.is_empty() {
@@ -124,7 +124,7 @@ impl Emitter {
                 if i > 0 {
                     self.write(", ");
                 }
-                self.write(&format!("{} {}", type_to_c(p.ty), p.name));
+                self.write(&format!("{} {}", type_to_c(&p.ty), p.name));
             }
         }
         self.write(")");
@@ -150,7 +150,7 @@ impl Emitter {
         self.indent += 1;
         self.push_scope();
         for p in &f.params {
-            self.declare(&p.name, p.ty);
+            self.declare(&p.name, p.ty.clone());
         }
         for s in &f.body.stmts {
             self.emit_stmt(s)?;
@@ -162,6 +162,119 @@ impl Emitter {
         self.pop_scope();
         self.indent -= 1;
         self.writeln("}");
+        Ok(())
+    }
+
+    /// Emit a `yallalc var chu iter { body }` loop. For arrays we iterate by
+    /// index and bind `var` to the element; for ranges we emit a plain
+    /// counting loop.
+    fn emit_for_each(
+        &mut self,
+        var: &str,
+        iter: &IterSource,
+        body: &Block,
+    ) -> Result<()> {
+        match iter {
+            IterSource::Range { start, end } => {
+                self.write_indent();
+                self.write(&format!("for (int64_t {} = ", var));
+                let st = self.emit_expr(start)?;
+                if st != Type::Terah {
+                    return Err(Error::Codegen(format!(
+                        "range start must be terah, got {}",
+                        type_name(&st)
+                    )));
+                }
+                self.write(&format!("; {} < ", var));
+                let et = self.emit_expr(end)?;
+                if et != Type::Terah {
+                    return Err(Error::Codegen(format!(
+                        "range end must be terah, got {}",
+                        type_name(&et)
+                    )));
+                }
+                self.write(&format!("; {}++)", var));
+                self.loop_depth += 1;
+                self.push_scope();
+                self.declare(var, Type::Terah);
+                let r = self.emit_block_body(body);
+                self.pop_scope();
+                self.loop_depth -= 1;
+                r?;
+                self.writeln("");
+            }
+            IterSource::Array(arr_expr) => {
+                // Emit: { TYPE __arr = <arr>; for (size_t __i = 0; __i < __arr.len; __i++) { ELEM var = __arr.data[__i]; body } }
+                // The outer block scopes the temp names. We give `var` the
+                // element type in our scope tracker so the body sees it
+                // correctly.
+                let arr_ty = self.infer(arr_expr)?;
+                let elem_ty = match &arr_ty {
+                    Type::Array(inner) => (**inner).clone(),
+                    other => {
+                        return Err(Error::Codegen(format!(
+                            "`yallalc ... chu` needs an array, got {}",
+                            type_name(other)
+                        )));
+                    }
+                };
+                self.write_indent();
+                self.writeln("{");
+                self.indent += 1;
+                // temp for the array so we only evaluate it once
+                self.write_indent();
+                self.write(&format!("{} __mott_arr = ", type_to_c(&arr_ty)));
+                self.emit_expr(arr_expr)?;
+                self.writeln(";");
+                self.write_indent();
+                self.write(
+                    "for (size_t __mott_i = 0; __mott_i < __mott_arr.len; __mott_i++)",
+                );
+                self.writeln(" {");
+                self.indent += 1;
+                self.write_indent();
+                self.writeln(&format!(
+                    "{} {} = __mott_arr.data[__mott_i];",
+                    type_to_c(&elem_ty),
+                    var
+                ));
+                self.loop_depth += 1;
+                self.push_scope();
+                self.declare(var, elem_ty);
+                let body_result: Result<()> = (|| {
+                    for s in &body.stmts {
+                        self.emit_stmt(s)?;
+                    }
+                    Ok(())
+                })();
+                self.pop_scope();
+                self.loop_depth -= 1;
+                body_result?;
+                self.indent -= 1;
+                self.write_indent();
+                self.writeln("}");
+                self.indent -= 1;
+                self.write_indent();
+                self.writeln("}");
+            }
+        }
+        Ok(())
+    }
+
+    /// Emit just the statements of a block, without opening/closing braces
+    /// or pushing a scope. Used by for-each where the caller manages
+    /// bracing and scoping itself.
+    fn emit_block_body(&mut self, b: &Block) -> Result<()> {
+        self.writeln(" {");
+        self.indent += 1;
+        self.push_scope();
+        for s in &b.stmts {
+            self.emit_stmt(s)?;
+        }
+        self.pop_scope();
+        self.indent -= 1;
+        self.write_indent();
+        self.write("}");
         Ok(())
     }
 
@@ -190,8 +303,8 @@ impl Emitter {
                     "argument {} of `{}`: expected {}, got {}",
                     i + 1,
                     callee,
-                    type_name(*expected),
-                    type_name(at)
+                    type_name(expected),
+                    type_name(&at)
                 )));
             }
         }
@@ -214,7 +327,7 @@ impl Emitter {
         if ct != Type::Bool {
             return Err(Error::Codegen(format!(
                 "`nagah sanna` condition must be bool, got {}",
-                type_name(ct)
+                type_name(&ct)
             )));
         }
         self.write(")");
@@ -252,7 +365,7 @@ impl Emitter {
             Stmt::Let { name, ty, value } => {
                 self.write_indent();
                 let actual_ty = match ty {
-                    Some(t) => *t,
+                    Some(t) => t.clone(),
                     None => self.infer(value)?,
                 };
                 if self.scopes.last().unwrap().contains_key(name) {
@@ -261,14 +374,14 @@ impl Emitter {
                         name
                     )));
                 }
-                self.write(&format!("{} {} = ", type_to_c(actual_ty), name));
+                self.write(&format!("{} {} = ", type_to_c(&actual_ty), name));
                 let val_ty = self.emit_expr(value)?;
                 if ty.is_some() && val_ty != actual_ty {
                     return Err(Error::Codegen(format!(
                         "type mismatch: `{}` declared as {} but initializer is {}",
                         name,
-                        type_name(actual_ty),
-                        type_name(val_ty)
+                        type_name(&actual_ty),
+                        type_name(&val_ty)
                     )));
                 }
                 self.writeln(";");
@@ -285,8 +398,8 @@ impl Emitter {
                     return Err(Error::Codegen(format!(
                         "type mismatch: `{}` is {} but value is {}",
                         name,
-                        type_name(target_ty),
-                        type_name(val_ty)
+                        type_name(&target_ty),
+                        type_name(&val_ty)
                     )));
                 }
                 self.writeln(";");
@@ -307,7 +420,7 @@ impl Emitter {
                 if ct != Type::Bool {
                     return Err(Error::Codegen(format!(
                         "`cqachunna` condition must be bool, got {}",
-                        type_name(ct)
+                        type_name(&ct)
                     )));
                 }
                 self.write(")");
@@ -353,6 +466,13 @@ impl Emitter {
                     Type::Daqosh => "mott_yazde_daqosh",
                     Type::Bool => "mott_yazde_bool",
                     Type::Deshnash => "mott_yazde_deshnash",
+                    Type::Array(_) => {
+                        return Err(Error::Codegen(
+                            "can't print arrays directly yet — iterate \
+                             with `yallalc` and print each element"
+                                .into(),
+                        ));
+                    }
                 };
                 self.write_indent();
                 self.write(&format!("{}(", helper));
@@ -375,6 +495,47 @@ impl Emitter {
                 }
                 self.emit_expr(e)?;
                 self.writeln(";");
+            }
+            Stmt::IndexAssign { name, index, value } => {
+                // Check target is an array; element type must match value.
+                let arr_ty = self.lookup(name).ok_or_else(|| {
+                    Error::Codegen(format!(
+                        "assignment to undefined variable `{}`",
+                        name
+                    ))
+                })?;
+                let elem_ty = match &arr_ty {
+                    Type::Array(inner) => (**inner).clone(),
+                    other => {
+                        return Err(Error::Codegen(format!(
+                            "`{}` is {}, can't index-assign",
+                            name,
+                            type_name(other)
+                        )));
+                    }
+                };
+                self.write_indent();
+                self.write(&format!("{}.data[", name));
+                let idx_ty = self.emit_expr(index)?;
+                if idx_ty != Type::Terah {
+                    return Err(Error::Codegen(format!(
+                        "array index must be terah, got {}",
+                        type_name(&idx_ty)
+                    )));
+                }
+                self.write("] = ");
+                let val_ty = self.emit_expr(value)?;
+                if val_ty != elem_ty {
+                    return Err(Error::Codegen(format!(
+                        "element type mismatch: array is [{}] but value is {}",
+                        type_name(&elem_ty),
+                        type_name(&val_ty)
+                    )));
+                }
+                self.writeln(";");
+            }
+            Stmt::ForEach { var, iter, body } => {
+                self.emit_for_each(var, iter, body)?;
             }
         }
         Ok(())
@@ -431,8 +592,8 @@ impl Emitter {
                         if lt_pre != rt_pre {
                             return Err(Error::Codegen(format!(
                                 "comparison type mismatch: {} vs {}",
-                                type_name(lt_pre),
-                                type_name(rt_pre)
+                                type_name(&lt_pre),
+                                type_name(&rt_pre)
                             )));
                         }
                         let negate = matches!(op, BinOp::NotEq);
@@ -459,14 +620,14 @@ impl Emitter {
                         if lt != rt {
                             return Err(Error::Codegen(format!(
                                 "arithmetic type mismatch: {} vs {}",
-                                type_name(lt),
-                                type_name(rt)
+                                type_name(&lt),
+                                type_name(&rt)
                             )));
                         }
                         if !matches!(lt, Type::Terah | Type::Daqosh) {
                             return Err(Error::Codegen(format!(
                                 "arithmetic on non-numeric type {}",
-                                type_name(lt)
+                                type_name(&lt)
                             )));
                         }
                         if matches!(op, BinOp::Mod) && lt != Type::Terah {
@@ -482,8 +643,8 @@ impl Emitter {
                         if lt != rt {
                             return Err(Error::Codegen(format!(
                                 "comparison type mismatch: {} vs {}",
-                                type_name(lt),
-                                type_name(rt)
+                                type_name(&lt),
+                                type_name(&rt)
                             )));
                         }
                         Ok(Type::Bool)
@@ -492,14 +653,14 @@ impl Emitter {
                         if lt != rt {
                             return Err(Error::Codegen(format!(
                                 "comparison type mismatch: {} vs {}",
-                                type_name(lt),
-                                type_name(rt)
+                                type_name(&lt),
+                                type_name(&rt)
                             )));
                         }
                         if !matches!(lt, Type::Terah | Type::Daqosh) {
                             return Err(Error::Codegen(format!(
                                 "ordering comparison needs numeric operands, got {}",
-                                type_name(lt)
+                                type_name(&lt)
                             )));
                         }
                         Ok(Type::Bool)
@@ -519,7 +680,7 @@ impl Emitter {
                         if !matches!(t, Type::Terah | Type::Daqosh) {
                             return Err(Error::Codegen(format!(
                                 "unary `-` requires numeric, got {}",
-                                type_name(t)
+                                type_name(&t)
                             )));
                         }
                         Ok(t)
@@ -528,7 +689,7 @@ impl Emitter {
                         if t != Type::Bool {
                             return Err(Error::Codegen(format!(
                                 "unary `!` requires bool, got {}",
-                                type_name(t)
+                                type_name(&t)
                             )));
                         }
                         Ok(Type::Bool)
@@ -545,7 +706,7 @@ impl Emitter {
                     if t != Type::Bool {
                         return Err(Error::Codegen(format!(
                             "AND operand must be bool, got {}",
-                            type_name(t)
+                            type_name(&t)
                         )));
                     }
                 }
@@ -562,7 +723,7 @@ impl Emitter {
                     if t != Type::Bool {
                         return Err(Error::Codegen(format!(
                             "OR operand must be bool, got {}",
-                            type_name(t)
+                            type_name(&t)
                         )));
                     }
                 }
@@ -584,6 +745,84 @@ impl Emitter {
                         callee
                     ))
                 })
+            }
+            Expr::Input => {
+                self.write("mott_input()");
+                Ok(Type::Deshnash)
+            }
+            Expr::ArrayLit(elems) => {
+                // Determine element type from the first element; all others
+                // must match. Reject nested arrays for now.
+                let first_ty = self.infer(&elems[0])?;
+                if matches!(first_ty, Type::Array(_)) {
+                    return Err(Error::Codegen(
+                        "nested arrays aren't supported yet".into(),
+                    ));
+                }
+                for (i, e) in elems.iter().enumerate().skip(1) {
+                    let t = self.infer(e)?;
+                    if t != first_ty {
+                        return Err(Error::Codegen(format!(
+                            "array literal element {}: expected {}, got {}",
+                            i,
+                            type_name(&first_ty),
+                            type_name(&t)
+                        )));
+                    }
+                }
+                let elem_c = type_to_c(&first_ty);
+                let ctor = array_ctor_name(&first_ty);
+                self.write(&format!("{}({}, (", ctor, elems.len()));
+                self.write(&format!("{}[]){{ ", elem_c));
+                for (i, e) in elems.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.emit_expr(e)?;
+                }
+                self.write(" })");
+                Ok(Type::Array(Box::new(first_ty)))
+            }
+            Expr::Index { target, index } => {
+                let tgt_ty = self.infer(target)?;
+                let elem_ty = match &tgt_ty {
+                    Type::Array(inner) => (**inner).clone(),
+                    other => {
+                        return Err(Error::Codegen(format!(
+                            "cannot index into non-array type {}",
+                            type_name(other)
+                        )));
+                    }
+                };
+                self.write("(");
+                self.emit_expr(target)?;
+                self.write(".data[");
+                let idx_ty = self.emit_expr(index)?;
+                if idx_ty != Type::Terah {
+                    return Err(Error::Codegen(format!(
+                        "array index must be terah, got {}",
+                        type_name(&idx_ty)
+                    )));
+                }
+                self.write("])");
+                Ok(elem_ty)
+            }
+            Expr::Baram(inner) => {
+                let t = self.infer(inner)?;
+                if !matches!(t, Type::Array(_) | Type::Deshnash) {
+                    return Err(Error::Codegen(format!(
+                        "`baram` needs an array or string, got {}",
+                        type_name(&t)
+                    )));
+                }
+                // Struct layout for both mott_arr_* and mott_str has `.len`
+                // as the second field — one emission works for both. Cast
+                // to int64_t because .len is size_t and Mott numbers are
+                // all terah (int64).
+                self.write("((int64_t)(");
+                self.emit_expr(inner)?;
+                self.write(".len))");
+                Ok(Type::Terah)
             }
         }
     }
@@ -628,6 +867,12 @@ impl Emitter {
                         Type::Terah => self.write(&format!("mott_str_from_terah({})", id)),
                         Type::Daqosh => self.write(&format!("mott_str_from_daqosh({})", id)),
                         Type::Bool => self.write(&format!("mott_str_from_bool({})", id)),
+                        Type::Array(_) => {
+                            return Err(Error::Codegen(format!(
+                                "cannot interpolate array `{}` into a string",
+                                id
+                            )));
+                        }
                     }
                 }
             }
@@ -662,13 +907,34 @@ impl Emitter {
                 let sig = self.functions.get(callee).ok_or_else(|| {
                     Error::Codegen(format!("call to undefined function `{}`", callee))
                 })?;
-                sig.return_type.ok_or_else(|| {
+                sig.return_type.clone().ok_or_else(|| {
                     Error::Codegen(format!(
                         "function `{}` returns no value but its result is used",
                         callee
                     ))
                 })
             }
+            Expr::Input => Ok(Type::Deshnash),
+            Expr::ArrayLit(elems) => {
+                if elems.is_empty() {
+                    return Err(Error::Codegen(
+                        "empty array literal has no inferable type".into(),
+                    ));
+                }
+                let t = self.infer(&elems[0])?;
+                Ok(Type::Array(Box::new(t)))
+            }
+            Expr::Index { target, .. } => {
+                let t = self.infer(target)?;
+                match t {
+                    Type::Array(inner) => Ok(*inner),
+                    other => Err(Error::Codegen(format!(
+                        "cannot index into non-array type {}",
+                        type_name(&other)
+                    ))),
+                }
+            }
+            Expr::Baram(_) => Ok(Type::Terah),
         }
     }
 
@@ -688,7 +954,7 @@ impl Emitter {
     fn lookup(&self, name: &str) -> Option<Type> {
         for scope in self.scopes.iter().rev() {
             if let Some(t) = scope.get(name) {
-                return Some(*t);
+                return Some(t.clone());
             }
         }
         None
@@ -726,21 +992,45 @@ fn as_chained_if(b: &Block) -> Option<(&Expr, &Block, Option<&Block>)> {
     }
 }
 
-fn type_to_c(t: Type) -> &'static str {
+/// C type name for a mott type. Arrays produce per-element-type struct
+/// names like `mott_arr_terah` that are declared in the runtime header.
+fn type_to_c(t: &Type) -> String {
     match t {
-        Type::Terah => "int64_t",
-        Type::Daqosh => "double",
-        Type::Bool => "bool",
-        Type::Deshnash => "mott_str",
+        Type::Terah => "int64_t".into(),
+        Type::Daqosh => "double".into(),
+        Type::Bool => "bool".into(),
+        Type::Deshnash => "mott_str".into(),
+        Type::Array(inner) => match inner.as_ref() {
+            Type::Terah => "mott_arr_terah".into(),
+            Type::Daqosh => "mott_arr_daqosh".into(),
+            Type::Bool => "mott_arr_bool".into(),
+            Type::Deshnash => "mott_arr_deshnash".into(),
+            Type::Array(_) => "mott_arr_nested".into(),
+            // ^ Unused today — nested arrays are rejected before we
+            // get here, but keeping the arm so the match is exhaustive.
+        },
     }
 }
 
-fn type_name(t: Type) -> &'static str {
+/// Mott-language type name for diagnostics.
+fn type_name(t: &Type) -> String {
     match t {
-        Type::Terah => "terah",
-        Type::Daqosh => "daqosh",
-        Type::Bool => "bool",
-        Type::Deshnash => "deshnash",
+        Type::Terah => "terah".into(),
+        Type::Daqosh => "daqosh".into(),
+        Type::Bool => "bool".into(),
+        Type::Deshnash => "deshnash".into(),
+        Type::Array(inner) => format!("[{}]", type_name(inner)),
+    }
+}
+
+/// Name of the runtime constructor for an array whose element type is `t`.
+fn array_ctor_name(t: &Type) -> &'static str {
+    match t {
+        Type::Terah => "mott_arr_terah_new",
+        Type::Daqosh => "mott_arr_daqosh_new",
+        Type::Bool => "mott_arr_bool_new",
+        Type::Deshnash => "mott_arr_deshnash_new",
+        Type::Array(_) => "mott_arr_nested_new", // unreachable today
     }
 }
 
@@ -1065,6 +1355,136 @@ fnc kort() {
         .unwrap_err();
         let msg = format!("{}", err);
         assert!(msg.contains("numeric"), "got: {}", msg);
+    }
+
+    #[test]
+    fn esha_emits_mott_input_call_typed_as_deshnash() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit line: deshnash = esha()
+    yazde(line)
+}
+"#,
+        );
+        assert!(c.contains("mott_input()"), "got:\n{}", c);
+        // Must be stored as mott_str (deshnash), not int64 or anything else.
+        assert!(c.contains("mott_str line = "), "got:\n{}", c);
+    }
+
+    #[test]
+    fn esha_into_wrong_type_is_rejected() {
+        let err = compile(
+            r#"
+fnc kort() {
+    xilit n: terah = esha()
+}
+"#,
+        )
+        .unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("type mismatch"), "got: {}", msg);
+    }
+
+    #[test]
+    fn array_literal_emits_runtime_constructor() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit nums: [terah] = [1, 2, 3]
+    yazde(baram(nums))
+}
+"#,
+        );
+        assert!(c.contains("mott_arr_terah nums = "), "got:\n{}", c);
+        assert!(c.contains("mott_arr_terah_new(3"), "got:\n{}", c);
+        assert!(c.contains("(int64_t)(nums.len)"), "got:\n{}", c);
+    }
+
+    #[test]
+    fn for_each_array_emits_indexed_loop() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit nums: [terah] = [10, 20, 30]
+    yallalc x chu nums {
+        yazde(x)
+    }
+}
+"#,
+        );
+        assert!(c.contains("__mott_arr.len"), "got:\n{}", c);
+        assert!(c.contains("int64_t x = __mott_arr.data[__mott_i]"), "got:\n{}", c);
+    }
+
+    #[test]
+    fn for_each_range_emits_counting_loop() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    yallalc i chu 0..5 {
+        yazde(i)
+    }
+}
+"#,
+        );
+        assert!(c.contains("for (int64_t i = "), "got:\n{}", c);
+        assert!(c.contains("i++"), "got:\n{}", c);
+    }
+
+    #[test]
+    fn baram_on_string_works() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit s: deshnash = "salam"
+    yazde(baram(s))
+}
+"#,
+        );
+        assert!(c.contains("(int64_t)(s.len)"), "got:\n{}", c);
+    }
+
+    #[test]
+    fn array_index_assignment() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit nums: [terah] = [1, 2, 3]
+    nums[0] = 99
+}
+"#,
+        );
+        assert!(c.contains("nums.data["), "got:\n{}", c);
+    }
+
+    #[test]
+    fn array_element_type_mismatch_is_rejected() {
+        let err = compile(
+            r#"
+fnc kort() {
+    xilit nums: [terah] = [1, 2, baqderg]
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{}", err).contains("expected terah"));
+    }
+
+    #[test]
+    fn yallalc_over_non_array_is_rejected() {
+        let err = compile(
+            r#"
+fnc kort() {
+    xilit x: terah = 5
+    yallalc i chu x {
+        yazde(i)
+    }
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{}", err).contains("needs an array"));
     }
 
     #[test]

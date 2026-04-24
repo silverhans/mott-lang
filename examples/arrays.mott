@@ -1,0 +1,41 @@
+// Массивы и for-each — сумма, квадраты, поиск минимума.
+
+fnc kort() {
+    // array literal + for-each over an array
+    xilit nums: [terah] = [5, 2, 8, 1, 9, 3]
+
+    yazde("elements:")
+    yallalc n chu nums {
+        yazde(n)
+    }
+
+    // sum via for-each
+    xilit total: terah = 0
+    yallalc n chu nums {
+        total = total + n
+    }
+    yazde("sum is {total}")
+
+    // range-based for-each — squares 1..5
+    yazde("squares 1..5:")
+    yallalc i chu 1..6 {
+        xilit sq: terah = i * i
+        yazde("{i} squared = {sq}")
+    }
+
+    // index-assign: scale first element by 10
+    nums[0] = nums[0] * 10
+    yazde("after scaling first by 10:")
+    yallalc n chu nums {
+        yazde(n)
+    }
+
+    // find minimum via indexed loop
+    xilit min_val: terah = nums[0]
+    yallalc i chu 1..baram(nums) {
+        nagah sanna nums[i] < min_val {
+            min_val = nums[i]
+        }
+    }
+    yazde("min is {min_val}")
+}

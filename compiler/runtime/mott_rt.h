@@ -49,4 +49,33 @@ mott_str mott_str_build(const mott_str *parts, size_t n);
  * C's `==`, which would compare struct fields and usually miscompare). */
 bool mott_str_eq(mott_str a, mott_str b);
 
+/* Read one line from stdin. Returns a heap-allocated mott_str with the
+ * trailing newline stripped. On EOF or read error, returns an empty
+ * mott_str (zero length, static data pointer). Leaks in MVP. */
+mott_str mott_input(void);
+
+/* --- Arrays ------------------------------------------------------------
+ *
+ * One struct per element type (until we get generics). All share the same
+ * layout — `data` pointer followed by `len` — so `baram(arr)` in the
+ * language always lowers to `arr.len` regardless of element type.
+ *
+ * Arrays in MVP are "fixed after creation": length is set when the literal
+ * is evaluated and never changes. No push/pop, no grow. Element mutation
+ * via `arr[i] = x` is allowed.
+ *
+ * Memory: the `*_new` helpers malloc a buffer, memcpy the provided
+ * elements in, and return a struct pointing at the buffer. Leaked in MVP,
+ * same policy as strings and mott_str_build. */
+
+typedef struct { int64_t  *data; size_t len; } mott_arr_terah;
+typedef struct { double   *data; size_t len; } mott_arr_daqosh;
+typedef struct { bool     *data; size_t len; } mott_arr_bool;
+typedef struct { mott_str *data; size_t len; } mott_arr_deshnash;
+
+mott_arr_terah    mott_arr_terah_new   (size_t n, const int64_t  *src);
+mott_arr_daqosh   mott_arr_daqosh_new  (size_t n, const double   *src);
+mott_arr_bool     mott_arr_bool_new    (size_t n, const bool     *src);
+mott_arr_deshnash mott_arr_deshnash_new(size_t n, const mott_str *src);
+
 #endif /* MOTT_RT_H */

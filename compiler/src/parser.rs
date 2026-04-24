@@ -1,4 +1,6 @@
-use crate::ast::{BinOp, Block, Expr, Function, Item, Param, Program, Stmt, Type, UnOp};
+use crate::ast::{
+    BinOp, Block, Expr, Function, Item, IterSource, Param, Program, Stmt, Type, UnOp,
+};
 use crate::error::{Error, Result};
 use crate::token::{Token, TokenKind};
 
@@ -99,6 +101,7 @@ impl Parser {
             TokenKind::Xilit => self.parse_let(),
             TokenKind::NagahSanna => self.parse_if(),
             TokenKind::Cqachunna => self.parse_while(),
+            TokenKind::Yallalc => self.parse_for_each(),
             TokenKind::Sac => self.parse_break(),
             TokenKind::Khida => self.parse_continue(),
             TokenKind::Yuxadalo => self.parse_return(),
@@ -106,7 +109,52 @@ impl Parser {
             TokenKind::Ident(_) if self.peek_kind_at(1) == Some(&TokenKind::Assign) => {
                 self.parse_assign()
             }
+            // `ident[...] = ...` — index-assignment. We need to look past
+            // the bracketed expression for `=`. Rather than full lookahead,
+            // detect the `ident [` start and try index-assign first; fall
+            // back to expr-stmt if what follows isn't an assignment shape.
+            TokenKind::Ident(_) if self.peek_kind_at(1) == Some(&TokenKind::LBracket) => {
+                self.parse_maybe_index_assign()
+            }
             _ => self.parse_expr_stmt(),
+        }
+    }
+
+    fn parse_for_each(&mut self) -> Result<Stmt> {
+        self.expect(&TokenKind::Yallalc, "expected `yallalc`")?;
+        let var = self.expect_ident("expected loop variable after `yallalc`")?;
+        self.expect(&TokenKind::Chu, "expected `chu` after loop variable")?;
+        let first = self.parse_expr()?;
+        let iter = if self.matches(&TokenKind::DotDot) {
+            let end = self.parse_expr()?;
+            IterSource::Range { start: first, end }
+        } else {
+            IterSource::Array(first)
+        };
+        let body = self.parse_block()?;
+        Ok(Stmt::ForEach { var, iter, body })
+    }
+
+    /// Called when `ident [` is at the start of a statement. The expression
+    /// `ident[idx]` followed by `=` is an IndexAssign; anything else is an
+    /// expression statement (a read-only indexing). We commit to one path
+    /// by peeking past the closing `]`.
+    fn parse_maybe_index_assign(&mut self) -> Result<Stmt> {
+        // Snapshot the parse position so we can fall back if it turns out
+        // to not be an assignment.
+        let start_pos = self.pos;
+        let name = self.expect_ident("expected identifier")?;
+        self.expect(&TokenKind::LBracket, "expected `[`")?;
+        let index = self.parse_expr()?;
+        self.expect(&TokenKind::RBracket, "expected `]`")?;
+        if self.matches(&TokenKind::Assign) {
+            let value = self.parse_expr()?;
+            self.expect(&TokenKind::Semicolon, "expected `;` after assignment")?;
+            Ok(Stmt::IndexAssign { name, index, value })
+        } else {
+            // Not an assignment — rewind and reparse as an expression stmt.
+            self.pos = start_pos;
+            self.parse_expr_stmt()
         }
     }
 
@@ -354,7 +402,7 @@ impl Parser {
             }
             TokenKind::Ident(name) => {
                 self.advance();
-                if self.matches(&TokenKind::LParen) {
+                let mut expr = if self.matches(&TokenKind::LParen) {
                     let mut args = Vec::new();
                     if !self.check(&TokenKind::RParen) {
                         args.push(self.parse_expr()?);
@@ -363,16 +411,69 @@ impl Parser {
                         }
                     }
                     self.expect(&TokenKind::RParen, "expected `)` after arguments")?;
-                    Ok(Expr::Call { callee: name, args })
+                    Expr::Call { callee: name, args }
                 } else {
-                    Ok(Expr::Ident(name))
+                    Expr::Ident(name)
+                };
+                // Postfix `[idx]` — chained indexing supported even though
+                // the type system forbids nested arrays for now.
+                while self.matches(&TokenKind::LBracket) {
+                    let index = self.parse_expr()?;
+                    self.expect(&TokenKind::RBracket, "expected `]` after index")?;
+                    expr = Expr::Index {
+                        target: Box::new(expr),
+                        index: Box::new(index),
+                    };
                 }
+                Ok(expr)
             }
             TokenKind::LParen => {
                 self.advance();
                 let e = self.parse_expr()?;
                 self.expect(&TokenKind::RParen, "expected `)`")?;
                 Ok(e)
+            }
+            TokenKind::LBracket => {
+                // Array literal `[e1, e2, ...]`. Require at least one element
+                // so the element type can be inferred without annotation.
+                self.advance();
+                let mut elems = Vec::new();
+                if self.check(&TokenKind::RBracket) {
+                    return Err(Error::Parse {
+                        line,
+                        col,
+                        message: "empty array literals aren't supported yet; \
+                                  the element type can't be inferred"
+                            .into(),
+                    });
+                }
+                elems.push(self.parse_expr()?);
+                while self.matches(&TokenKind::Comma) {
+                    if self.check(&TokenKind::RBracket) {
+                        break; // trailing comma allowed
+                    }
+                    elems.push(self.parse_expr()?);
+                }
+                self.expect(&TokenKind::RBracket, "expected `]` in array literal")?;
+                Ok(Expr::ArrayLit(elems))
+            }
+            TokenKind::Esha => {
+                // `esha()` — built-in read-line expression. Always zero args;
+                // the parens are mandatory to keep the grammar simple and
+                // to match the rest of the call syntax.
+                self.advance();
+                self.expect(&TokenKind::LParen, "expected `(` after `esha`")?;
+                self.expect(&TokenKind::RParen, "`esha` takes no arguments")?;
+                Ok(Expr::Input)
+            }
+            TokenKind::Baram => {
+                // `baram(x)` — built-in "size/length". Works on arrays and
+                // strings; the codegen picks `.len` off the right struct.
+                self.advance();
+                self.expect(&TokenKind::LParen, "expected `(` after `baram`")?;
+                let inner = self.parse_expr()?;
+                self.expect(&TokenKind::RParen, "expected `)` after `baram(...)`")?;
+                Ok(Expr::Baram(Box::new(inner)))
             }
             other => Err(Error::Parse {
                 line,
@@ -386,6 +487,13 @@ impl Parser {
 
     fn parse_type(&mut self) -> Result<Type> {
         let (line, col) = self.peek_pos();
+        // Array type: `[T]`. Recurse so `[[terah]]` would parse — though the
+        // rest of the pipeline rejects nested arrays in v0.2.
+        if self.matches(&TokenKind::LBracket) {
+            let inner = self.parse_type()?;
+            self.expect(&TokenKind::RBracket, "expected `]` in array type")?;
+            return Ok(Type::Array(Box::new(inner)));
+        }
         let ty = match self.peek() {
             TokenKind::Terah => Type::Terah,
             TokenKind::Bool => Type::Bool,
@@ -780,6 +888,24 @@ mod tests {
     }
 
     #[test]
+    fn esha_parses_as_input_expression() {
+        let p = parse_ok("fnc kort() { xilit s: deshnash = esha(); }");
+        let f = only_function(&p);
+        let Stmt::Let { value, .. } = &f.body.stmts[0] else {
+            panic!("expected let");
+        };
+        assert!(matches!(value, Expr::Input));
+    }
+
+    #[test]
+    fn esha_with_args_is_rejected() {
+        // `esha` takes no arguments — C/Rust-style, no Python-style prompt.
+        let err =
+            parse_source("fnc kort() { xilit s: deshnash = esha(\"prompt\"); }").unwrap_err();
+        assert!(format!("{}", err).contains("no arguments"));
+    }
+
+    #[test]
     fn parenthesized_expression_overrides_precedence() {
         let p = parse_ok("fnc kort() { xilit x = (1 + 2) * 3; }");
         let f = only_function(&p);
@@ -923,5 +1049,96 @@ mod tests {
         let p = parse_ok("fnc kort() { xilit x: terah = 1; yazde(x); }");
         let f = only_function(&p);
         assert_eq!(f.body.stmts.len(), 2);
+    }
+
+    #[test]
+    fn array_literal_and_type_parse() {
+        let p = parse_ok(
+            r#"fnc kort() {
+                xilit nums: [terah] = [1, 2, 3]
+            }"#,
+        );
+        let f = only_function(&p);
+        let Stmt::Let { ty, value, .. } = &f.body.stmts[0] else {
+            panic!("expected Let");
+        };
+        assert_eq!(ty, &Some(Type::Array(Box::new(Type::Terah))));
+        assert!(matches!(value, Expr::ArrayLit(elems) if elems.len() == 3));
+    }
+
+    #[test]
+    fn indexing_parses_as_index_expr() {
+        let p = parse_ok(
+            r#"fnc kort() {
+                xilit nums: [terah] = [1, 2, 3]
+                xilit first: terah = nums[0]
+            }"#,
+        );
+        let f = only_function(&p);
+        let Stmt::Let { value, .. } = &f.body.stmts[1] else {
+            panic!("expected Let");
+        };
+        assert!(matches!(value, Expr::Index { .. }));
+    }
+
+    #[test]
+    fn index_assign_stmt() {
+        let p = parse_ok(
+            r#"fnc kort() {
+                xilit nums: [terah] = [1, 2, 3]
+                nums[0] = 42
+            }"#,
+        );
+        let f = only_function(&p);
+        assert!(matches!(f.body.stmts[1], Stmt::IndexAssign { .. }));
+    }
+
+    #[test]
+    fn for_each_over_array() {
+        let p = parse_ok(
+            r#"fnc kort() {
+                xilit nums: [terah] = [1, 2, 3]
+                yallalc x chu nums {
+                    yazde(x)
+                }
+            }"#,
+        );
+        let f = only_function(&p);
+        let Stmt::ForEach { var, iter, .. } = &f.body.stmts[1] else {
+            panic!("expected ForEach");
+        };
+        assert_eq!(var, "x");
+        assert!(matches!(iter, IterSource::Array(_)));
+    }
+
+    #[test]
+    fn for_each_over_range() {
+        let p = parse_ok(
+            r#"fnc kort() {
+                yallalc i chu 0..10 {
+                    yazde("{i}")
+                }
+            }"#,
+        );
+        let f = only_function(&p);
+        let Stmt::ForEach { iter, .. } = &f.body.stmts[0] else {
+            panic!("expected ForEach");
+        };
+        assert!(matches!(iter, IterSource::Range { .. }));
+    }
+
+    #[test]
+    fn baram_parses_as_baram_expr() {
+        let p = parse_ok(
+            r#"fnc kort() {
+                xilit nums: [terah] = [1, 2, 3]
+                xilit n: terah = baram(nums)
+            }"#,
+        );
+        let f = only_function(&p);
+        let Stmt::Let { value, .. } = &f.body.stmts[1] else {
+            panic!("expected Let");
+        };
+        assert!(matches!(value, Expr::Baram(_)));
     }
 }

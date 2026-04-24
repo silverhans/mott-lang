@@ -1,0 +1,8 @@
+// Читает строку со stdin и печатает её обратно с префиксом.
+// Запусти: echo "hello" | mott examples/echo.mott -o /tmp/e && /tmp/e
+
+fnc kort() {
+    yazde("say something:")
+    xilit line: deshnash = esha()
+    yazde("you said: {line}")
+}

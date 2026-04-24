@@ -17,6 +17,7 @@ fn is_stmt_end(k: &TokenKind) -> bool {
             | TokenKind::Xarco
             | TokenKind::RParen
             | TokenKind::RBrace
+            | TokenKind::RBracket
             | TokenKind::Sac
             | TokenKind::Khida
             | TokenKind::Yuxadalo
@@ -90,8 +91,10 @@ impl<'a> Lexer<'a> {
             };
             let kind = self.scan_token(ch, line, col)?;
             match &kind {
-                TokenKind::LParen => paren_depth += 1,
-                TokenKind::RParen => paren_depth = paren_depth.saturating_sub(1),
+                TokenKind::LParen | TokenKind::LBracket => paren_depth += 1,
+                TokenKind::RParen | TokenKind::RBracket => {
+                    paren_depth = paren_depth.saturating_sub(1);
+                }
                 _ => {}
             }
             tokens.push(Token { kind, line, col });
@@ -115,6 +118,27 @@ impl<'a> Lexer<'a> {
             '}' => {
                 self.advance();
                 Ok(TokenKind::RBrace)
+            }
+            '[' => {
+                self.advance();
+                Ok(TokenKind::LBracket)
+            }
+            ']' => {
+                self.advance();
+                Ok(TokenKind::RBracket)
+            }
+            '.' => {
+                self.advance();
+                if self.peek() == Some('.') {
+                    self.advance();
+                    Ok(TokenKind::DotDot)
+                } else {
+                    Err(Error::Lex {
+                        line,
+                        col,
+                        message: "unexpected single `.` (did you mean `..`?)".into(),
+                    })
+                }
             }
             ';' => {
                 self.advance();
@@ -256,10 +280,14 @@ impl<'a> Lexer<'a> {
             "xilit" => TokenKind::Xilit,
             "yuxadalo" => TokenKind::Yuxadalo,
             "yazde" => TokenKind::Yazde,
+            "esha" => TokenKind::Esha,
             "khi" => TokenKind::Khi,
             "cqachunna" => TokenKind::Cqachunna,
+            "yallalc" => TokenKind::Yallalc,
+            "chu" => TokenKind::Chu,
             "sac" => TokenKind::Sac,
             "khida" => TokenKind::Khida,
+            "baram" => TokenKind::Baram,
             "baqderg" => TokenKind::Baqderg,
             "xarco" => TokenKind::Xarco,
             "a" => TokenKind::A,
@@ -513,20 +541,46 @@ mod tests {
     #[test]
     fn single_keywords() {
         assert_eq!(
-            kinds("fnc xilit yuxadalo yazde khi cqachunna sac khida baqderg xarco a ya"),
+            kinds(
+                "fnc xilit yuxadalo yazde esha khi cqachunna yallalc chu \
+                 sac khida baram baqderg xarco a ya"
+            ),
             vec![
                 TokenKind::Fnc,
                 TokenKind::Xilit,
                 TokenKind::Yuxadalo,
                 TokenKind::Yazde,
+                TokenKind::Esha,
                 TokenKind::Khi,
                 TokenKind::Cqachunna,
+                TokenKind::Yallalc,
+                TokenKind::Chu,
                 TokenKind::Sac,
                 TokenKind::Khida,
+                TokenKind::Baram,
                 TokenKind::Baqderg,
                 TokenKind::Xarco,
                 TokenKind::A,
                 TokenKind::Ya,
+                TokenKind::Eof,
+            ]
+        );
+    }
+
+    #[test]
+    fn array_brackets_and_dotdot() {
+        assert_eq!(
+            kinds("[1, 2] 0..10"),
+            vec![
+                TokenKind::LBracket,
+                TokenKind::Integer(1),
+                TokenKind::Comma,
+                TokenKind::Integer(2),
+                TokenKind::RBracket,
+                TokenKind::Integer(0),
+                TokenKind::DotDot,
+                TokenKind::Integer(10),
+                TokenKind::Semicolon,
                 TokenKind::Eof,
             ]
         );

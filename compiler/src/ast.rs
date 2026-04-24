@@ -24,12 +24,13 @@ pub struct Param {
     pub ty: Type,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
-    Terah,    // int64
-    Bool,     // bool
-    Deshnash, // string
-    Daqosh,   // float64
+    Terah,            // int64
+    Bool,             // bool
+    Deshnash,         // string
+    Daqosh,           // float64
+    Array(Box<Type>), // [T] — heap-backed array, fixed-size in MVP
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +49,14 @@ pub enum Stmt {
         name: String,
         value: Expr,
     },
+    /// `arr[idx] = value` — write into an array element. Kept as a separate
+    /// statement (not a general l-value) to avoid dragging a full l-value
+    /// system into the parser for a single feature.
+    IndexAssign {
+        name: String,
+        index: Expr,
+        value: Expr,
+    },
     If {
         cond: Expr,
         then_block: Block,
@@ -57,11 +66,26 @@ pub enum Stmt {
         cond: Expr,
         body: Block,
     },
+    /// `yallalc var chu source { body }`. `source` is either an array
+    /// expression or a range; the variant distinguishes which.
+    ForEach {
+        var: String,
+        iter: IterSource,
+        body: Block,
+    },
     Break,
     Continue,
     Return(Option<Expr>),
     Print(Expr),
     ExprStmt(Expr),
+}
+
+#[derive(Debug, Clone)]
+pub enum IterSource {
+    /// `chu arr_expr` — iterate elements of an array.
+    Array(Expr),
+    /// `chu start..end` — half-open integer range, end exclusive.
+    Range { start: Expr, end: Expr },
 }
 
 #[derive(Debug, Clone)]
@@ -86,6 +110,20 @@ pub enum Expr {
         callee: String,
         args: Vec<Expr>,
     },
+    /// `esha()` — reads one line from stdin, returns `deshnash`. Trailing
+    /// newline stripped. On EOF, returns an empty string.
+    Input,
+    /// `[e1, e2, ...]` — array literal. Empty literals (`[]`) are ambiguous
+    /// about element type; we require at least one element for now.
+    ArrayLit(Vec<Expr>),
+    /// `target[index]` — array element access. Returns the element type.
+    Index {
+        target: Box<Expr>,
+        index: Box<Expr>,
+    },
+    /// `baram(x)` — size/length built-in. Works on arrays and strings; the
+    /// codegen picks the right struct field at emission time.
+    Baram(Box<Expr>),
 }
 
 #[derive(Debug, Clone, Copy)]

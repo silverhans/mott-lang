@@ -2,7 +2,7 @@
   "name": "mott",
   "displayName": "Mott",
   "description": "Syntax highlighting and editor support for Mott — a hobby programming language with Chechen keywords.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "silverhans",
   "license": "MIT",
   "repository": {

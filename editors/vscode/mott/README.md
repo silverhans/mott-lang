@@ -1,69 +1,84 @@
 # Mott for VS Code
 
-Syntax highlighting and editor support for [Mott](https://github.com/silverhans/mott-lang) — a hobby programming language with Chechen keywords.
-
-## Features
-
-- Syntax highlighting: keywords (`nagah sanna`, `cqachunna`, `khi`, `sac`, `khida`, `yuxadalo`, `fnc`, `xilit`), built-in `yazde`, types (`terah`, `bool`, `deshnash`, `daqosh`), booleans (`baqderg` / `xarco`), logical operators (`a` / `ya`), comments, numbers, strings with `{ident}` interpolation.
-- Auto-closing brackets and quotes.
-- Line-comment toggle (`Cmd+/` on macOS, `Ctrl+/` on Linux/Windows).
-- Auto-indent on `{` / `}`.
+Syntax highlighting for **Mott (мотт)** — a small, statically-typed hobby programming language with Chechen keywords that compiles to native binaries via C.
 
 ## Example
 
 ```mott
-fnc greet(name: deshnash) {
-    nagah sanna name == "Ruslan" {
-        yazde("Salam, voqsha Ruslan!")
-    } khi {
-        yazde("Salam, {name}!")
-    }
+fnc square(x: terah) -> terah {
+    yuxadalo x * x
 }
 
 fnc kort() {
-    greet("Ruslan")
-    greet("Madina")
+    xilit n: terah = 7
+    xilit s: terah = square(n)
+    yazde("{n} squared is {s}")
 }
 ```
 
-## Install (local development)
+And a fuller showcase — loops, `khi nagah sanna` chains, and the postfix-`a` logical AND:
 
-Until the extension is published to the marketplace, package it and install the `.vsix` via your editor's CLI:
-
-```sh
-# 1. Install the packager once, if you don't have it.
-npm install -g @vscode/vsce
-
-# 2. Build the .vsix from this directory.
-cd editors/vscode/mott
-vsce package
-
-# 3. Install into your editor(s). Pick what you have:
-code --install-extension mott-0.1.0.vsix      # VS Code
-cursor --install-extension mott-0.1.0.vsix    # Cursor
+```mott
+fnc kort() {
+    xilit i: terah = 1
+    cqachunna i <= 100 {
+        nagah sanna i % 3 == 0 a, i % 5 == 0 a {
+            yazde("FizzBuzz")
+        } khi nagah sanna i % 3 == 0 {
+            yazde("Fizz")
+        } khi nagah sanna i % 5 == 0 {
+            yazde("Buzz")
+        } khi {
+            yazde("{i}")
+        }
+        i = i + 1
+    }
+}
 ```
 
-If the `code` / `cursor` CLI isn't on your `$PATH`, use the full path from the app bundle, e.g. on macOS:
-`/Applications/Cursor.app/Contents/Resources/app/bin/cursor --install-extension mott-0.1.0.vsix`.
+| Mott | Meaning |
+|---|---|
+| `fnc` | function |
+| `xilit` | variable binding (`let`) |
+| `nagah sanna` | `if` |
+| `khi` | `else` |
+| `cqachunna` | `while` |
+| `sac`, `khida` | `break`, `continue` |
+| `yuxadalo` | `return` |
+| `yazde` | `print` |
+| `baqderg`, `xarco` | `true`, `false` |
+| `a`, `ya` | logical AND (postfix), OR |
+| `terah`, `daqosh`, `bool`, `deshnash` | `int64`, `float64`, `bool`, `string` |
 
-Reload the editor window after install (Cmd+Shift+P → *Developer: Reload Window*). You can verify installation with `code --list-extensions | grep mott`.
+Full language spec: [docs/spec.md](https://github.com/silverhans/mott-lang/blob/main/docs/spec.md).
 
-> **Note:** dropping a symlink into `~/.vscode/extensions/` alone no longer works — recent VS Code versions rely on the registered-extensions list, not directory scanning. Use `--install-extension` above.
+## Features
 
-For one-shot dev testing without installing (useful when iterating on the grammar):
+- **Syntax highlighting** — keywords, types, literals, comments, and `{ident}` string interpolation.
+- **Language-aware editing** — auto-closing brackets and quotes, `Cmd+/` comment toggle, auto-indent on braces.
+- **File icon** — a wolf (борз, the national symbol of Chechnya) in editor tabs.
+
+This extension is static — no LSP, autocomplete, or linting yet. Those are on the roadmap.
+
+## Compiling Mott programs
+
+This extension only handles highlighting. To actually build and run `.mott` files, install the `mott` compiler:
+
 ```sh
-code --extensionDevelopmentPath="$(pwd)" .
+git clone https://github.com/silverhans/mott-lang
+cargo install --path mott-lang/compiler
+mott hello.mott && ./hello
 ```
 
-## Building and running Mott files
+Requires Rust (for the compiler) and `clang` (to link the runtime) on your machine.
 
-If you open the [mott-lang repo](https://github.com/silverhans/mott-lang) in VS Code, `.vscode/tasks.json` is wired up:
+If you open the [mott-lang repo](https://github.com/silverhans/mott-lang) itself in VS Code, `Cmd+Shift+B` is pre-wired to compile the active file and route errors to the *Problems* panel.
 
-- `Cmd+Shift+B` — compile the current `.mott` file with `mott`.
-- Errors from the compiler show up in the *Problems* panel at the right line and column.
-- A second task runs the compiled binary.
+## Links
 
-Standalone use outside the repo: make sure the `mott` binary is on your `$PATH` and invoke it directly.
+- **Repository**: https://github.com/silverhans/mott-lang
+- **Language spec**: https://github.com/silverhans/mott-lang/blob/main/docs/spec.md
+- **Issues / feedback**: https://github.com/silverhans/mott-lang/issues
 
 ## License
 

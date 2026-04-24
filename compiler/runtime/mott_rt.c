@@ -80,6 +80,55 @@ bool mott_str_eq(mott_str a, mott_str b) {
     return memcmp(a.data, b.data, a.len) == 0;
 }
 
+/* --- Arrays --- */
+
+#define MOTT_DEFINE_ARR_NEW(name, elem_t)                                      \
+    mott_arr_##name mott_arr_##name##_new(size_t n, const elem_t *src) {       \
+        elem_t *data = NULL;                                                   \
+        if (n > 0) {                                                           \
+            data = (elem_t *)malloc(n * sizeof(elem_t));                       \
+            if (!data) {                                                       \
+                fputs("mott runtime: out of memory\n", stderr);                \
+                abort();                                                       \
+            }                                                                  \
+            memcpy(data, src, n * sizeof(elem_t));                             \
+        }                                                                      \
+        return (mott_arr_##name){ .data = data, .len = n };                    \
+    }
+
+MOTT_DEFINE_ARR_NEW(terah,    int64_t)
+MOTT_DEFINE_ARR_NEW(daqosh,   double)
+MOTT_DEFINE_ARR_NEW(bool,     bool)
+MOTT_DEFINE_ARR_NEW(deshnash, mott_str)
+
+#undef MOTT_DEFINE_ARR_NEW
+
+mott_str mott_input(void) {
+    /* getline allocates and grows as needed — standard POSIX 2008 since
+     * macOS 10.7 and Linux glibc forever. Perfect fit for unknown-length
+     * lines. Ownership of `line` transfers to the returned mott_str. */
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t n = getline(&line, &cap, stdin);
+    if (n < 0) {
+        /* EOF or read error — return a safe empty string, free any buffer
+         * getline may have allocated. */
+        free(line);
+        return (mott_str){ .data = "", .len = 0 };
+    }
+    /* Strip a single trailing '\n' (and a preceding '\r' if present) so
+     * `yazde(esha())` doesn't double-space. */
+    size_t len = (size_t)n;
+    if (len > 0 && line[len - 1] == '\n') {
+        len--;
+        if (len > 0 && line[len - 1] == '\r') {
+            len--;
+        }
+        line[len] = '\0';
+    }
+    return (mott_str){ .data = line, .len = len };
+}
+
 mott_str mott_str_build(const mott_str *parts, size_t n) {
     size_t total = 0;
     for (size_t i = 0; i < n; i++) {
