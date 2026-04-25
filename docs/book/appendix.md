@@ -25,6 +25,7 @@
 | `to_daqosh` | | числовая конверсия → `daqosh` |
 | `push` | | добавить элемент в массив |
 | `pop` | | удалить и вернуть последний элемент |
+| `kep` | кеп | объявление структуры (form/shape) |
 | `baqderg` | бакъдерг | `true` |
 | `xarco` | харцо | `false` |
 | `a` | | постфиксное AND |
@@ -48,7 +49,7 @@
 fnc xilit yuxadalo yazde esha
 nagah sanna khi cqachunna yallalc chu
 sac khida baram parse_terah parse_daqosh to_terah to_daqosh
-push pop baqderg xarco a ya
+push pop kep baqderg xarco a ya
 terah bool deshnash daqosh
 ```
 
@@ -174,6 +175,22 @@ nagah sanna !ready {
 }
 ```
 
+### Структуры
+
+```mott
+kep Point {
+    x: terah,
+    y: terah,
+}
+
+xilit p: Point = Point { x: 3, y: 5 }   // конструирование
+xilit q = Point { y: 5, x: 3 }          // порядок неважен
+yazde("{p.x}")                          // доступ
+p.x = 10                                // присваивание (одно поле)
+```
+
+Все поля обязательны при конструировании. `==` пока не работает. Внутри `if`/`while` условий — оборачивай struct literal в `(...)`.
+
 ### I/O
 
 ```mott
@@ -228,7 +245,8 @@ xilit avg: daqosh = to_daqosh(sum) / to_daqosh(count)
 - Конкатенация строк через `+`
 - Конверсии между числовыми типами (`to_daqosh`, `to_terah`)
 - Методы (`arr.len`, `s.upper`) — пока только функции
-- Структуры и enums
+- Enums (структуры — есть)
+- Методы / `==` на структурах
 - Замыкания
 - Модули и `import`
 - Generics

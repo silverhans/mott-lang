@@ -22,7 +22,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::ast::{
-    BinOp, Block, Expr, Function, Item, IterSource, Program, Stmt, StringPart, Type, UnOp,
+    BinOp, Block, Expr, Function, Item, IterSource, Program, Stmt, StringPart, StructDef, Type,
+    UnOp,
 };
 use crate::error::{Error, Result};
 
@@ -35,12 +36,13 @@ pub struct FuncSig {
 }
 
 /// Output of sema, consumed by the backend. Right now it's just function
-/// signatures (used for Call type dispatch); the backend re-infers
-/// expression types itself. When we move to a typed AST this will grow
-/// an `expr_types: HashMap<...>` field.
+/// signatures and struct definitions (used for Call type dispatch and
+/// per-struct codegen); the backend re-infers expression types itself.
+/// When we move to a typed AST this will grow an `expr_types: HashMap<...>` field.
 #[derive(Debug)]
 pub struct TypeInfo {
     pub functions: HashMap<String, FuncSig>,
+    pub structs: HashMap<String, StructDef>,
 }
 
 /// Run semantic analysis over a program. Returns `TypeInfo` for the
@@ -50,6 +52,7 @@ pub fn check(program: &Program) -> Result<TypeInfo> {
     checker.check_program(program)?;
     Ok(TypeInfo {
         functions: checker.functions,
+        structs: checker.structs,
     })
 }
 
@@ -60,6 +63,10 @@ struct Checker {
     /// All declared functions, keyed by name. Pre-populated before
     /// checking bodies so calls in any direction resolve.
     functions: HashMap<String, FuncSig>,
+    /// All declared structs, keyed by name. Pre-populated before any
+    /// type-checking so functions/structs can reference structs declared
+    /// later in source.
+    structs: HashMap<String, StructDef>,
     /// Depth of enclosing `cqachunna` / `yallalc` loops. Validates
     /// `sac` and `khida` only appear inside one.
     loop_depth: usize,
@@ -74,22 +81,47 @@ struct Checker {
 
 impl Checker {
     fn new(program: &Program) -> Result<Self> {
-        // Collect all function signatures up front so call sites can
-        // resolve even before the callee is defined in source order.
-        let mut functions = HashMap::new();
+        let mut functions: HashMap<String, FuncSig> = HashMap::new();
+        let mut structs: HashMap<String, StructDef> = HashMap::new();
+        // Pre-pass: register all top-level names. Structs first so that
+        // function signatures referring to structs validate against
+        // already-known names. Both keep `kort`/structs from clashing
+        // because `kort` lives in `functions` and structs live in
+        // `structs` — they're different namespaces.
         for item in &program.items {
-            let Item::Function(f) = item;
-            let sig = FuncSig {
-                params: f.params.iter().map(|p| p.ty.clone()).collect(),
-                return_type: f.return_type.clone(),
-            };
-            if functions.insert(f.name.clone(), sig).is_some() {
-                return Err(Error::Sema(format!("duplicate function `{}`", f.name)));
+            if let Item::Struct(s) = item {
+                if structs.insert(s.name.clone(), s.clone()).is_some() {
+                    return Err(Error::Sema(format!(
+                        "duplicate struct `{}`",
+                        s.name
+                    )));
+                }
             }
         }
+        for item in &program.items {
+            if let Item::Function(f) = item {
+                let sig = FuncSig {
+                    params: f.params.iter().map(|p| p.ty.clone()).collect(),
+                    return_type: f.return_type.clone(),
+                };
+                if functions.insert(f.name.clone(), sig).is_some() {
+                    return Err(Error::Sema(format!("duplicate function `{}`", f.name)));
+                }
+            }
+        }
+        // Validate struct definitions: all field types resolve, no cycles.
+        // Cycles would create infinite-size types since every field is
+        // by-value (no pointers/refs in Mott).
+        for s in structs.values() {
+            for field in &s.fields {
+                check_type_resolvable(&field.ty, &structs)?;
+            }
+        }
+        detect_struct_cycles(&structs)?;
         Ok(Self {
             scopes: Vec::new(),
             functions,
+            structs,
             loop_depth: 0,
             current_params: HashSet::new(),
             current_return: None,
@@ -98,8 +130,12 @@ impl Checker {
 
     fn check_program(&mut self, program: &Program) -> Result<()> {
         for item in &program.items {
-            let Item::Function(f) = item;
-            self.check_function(f)?;
+            match item {
+                Item::Function(f) => self.check_function(f)?,
+                // Structs were validated at registration time (resolvable
+                // field types, no cycles). Nothing more to check here.
+                Item::Struct(_) => {}
+            }
         }
         Ok(())
     }
@@ -351,12 +387,22 @@ impl Checker {
             }
             Stmt::Print(e) => {
                 let ty = self.infer(e)?;
-                if matches!(ty, Type::Array(_)) {
-                    return Err(Error::Sema(
-                        "can't print arrays directly yet — iterate \
-                         with `yallalc` and print each element"
-                            .into(),
-                    ));
+                match ty {
+                    Type::Array(_) => {
+                        return Err(Error::Sema(
+                            "can't print arrays directly yet — iterate \
+                             with `yallalc` and print each element"
+                                .into(),
+                        ));
+                    }
+                    Type::Struct(name) => {
+                        return Err(Error::Sema(format!(
+                            "can't print struct `{}` directly — print \
+                             individual fields like `yazde(\"{{p.x}}\")`",
+                            name
+                        )));
+                    }
+                    _ => {}
                 }
             }
             Stmt::ExprStmt(e) => {
@@ -371,6 +417,46 @@ impl Checker {
                     }
                 }
                 self.infer(e)?;
+            }
+            Stmt::FieldAssign {
+                target,
+                field,
+                value,
+            } => {
+                let target_ty = self.lookup(target).ok_or_else(|| {
+                    Error::Sema(format!("assignment to undefined variable `{}`", target))
+                })?;
+                let struct_name = match &target_ty {
+                    Type::Struct(n) => n.clone(),
+                    other => {
+                        return Err(Error::Sema(format!(
+                            "`{}` is {}, can't assign to a field of it",
+                            target,
+                            type_name(other)
+                        )));
+                    }
+                };
+                let field_ty = self
+                    .structs
+                    .get(&struct_name)
+                    .and_then(|s| s.fields.iter().find(|f| f.name == *field))
+                    .map(|f| f.ty.clone())
+                    .ok_or_else(|| {
+                        Error::Sema(format!(
+                            "struct `{}` has no field `{}`",
+                            struct_name, field
+                        ))
+                    })?;
+                let val_ty = self.infer(value)?;
+                if val_ty != field_ty {
+                    return Err(Error::Sema(format!(
+                        "type mismatch: `{}.{}` is {} but value is {}",
+                        target,
+                        field,
+                        type_name(&field_ty),
+                        type_name(&val_ty)
+                    )));
+                }
             }
             Stmt::Push { name, value } => {
                 let arr_ty = self.lookup(name).ok_or_else(|| {
@@ -458,12 +544,22 @@ impl Checker {
                 for p in parts {
                     if let StringPart::Interpolation(expr) = p {
                         let t = self.infer(expr)?;
-                        if matches!(t, Type::Array(_)) {
-                            return Err(Error::Sema(
-                                "cannot interpolate an array into a string — \
-                                 iterate and interpolate each element"
-                                    .into(),
-                            ));
+                        match t {
+                            Type::Array(_) => {
+                                return Err(Error::Sema(
+                                    "cannot interpolate an array into a string — \
+                                     iterate and interpolate each element"
+                                        .into(),
+                                ));
+                            }
+                            Type::Struct(name) => {
+                                return Err(Error::Sema(format!(
+                                    "cannot interpolate struct `{}` directly — \
+                                     interpolate individual fields like `{{p.x}}`",
+                                    name
+                                )));
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -501,6 +597,19 @@ impl Checker {
                         if lt != rt {
                             return Err(Error::Sema(format!(
                                 "comparison type mismatch: {} vs {}",
+                                type_name(&lt),
+                                type_name(&rt)
+                            )));
+                        }
+                        // Struct == is intentionally not supported in v0.3.
+                        // We could do field-by-field comparison, but it's a
+                        // separate design decision (structural vs reference?
+                        // What about deshnash fields?) — deferred until we
+                        // know what we want.
+                        if matches!(lt, Type::Struct(_)) {
+                            return Err(Error::Sema(format!(
+                                "`==` on struct types isn't supported yet — \
+                                 compare individual fields instead (got {} vs {})",
                                 type_name(&lt),
                                 type_name(&rt)
                             )));
@@ -673,6 +782,85 @@ impl Checker {
                 }
                 Ok(Type::Daqosh)
             }
+            Expr::StructLit { name, fields } => {
+                let def = self
+                    .structs
+                    .get(name)
+                    .cloned()
+                    .ok_or_else(|| Error::Sema(format!("unknown struct `{}`", name)))?;
+
+                // Build a name -> expected-type map and check each
+                // supplied field exists, has correct type, and isn't
+                // duplicated. After the loop, check no required field
+                // is missing.
+                let expected: HashMap<&str, &Type> = def
+                    .fields
+                    .iter()
+                    .map(|f| (f.name.as_str(), &f.ty))
+                    .collect();
+                let mut seen: HashSet<&str> = HashSet::new();
+                for (fname, fexpr) in fields {
+                    let want_ty = expected.get(fname.as_str()).ok_or_else(|| {
+                        Error::Sema(format!(
+                            "struct `{}` has no field `{}`",
+                            name, fname
+                        ))
+                    })?;
+                    if !seen.insert(fname.as_str()) {
+                        return Err(Error::Sema(format!(
+                            "field `{}` listed twice in `{}` literal",
+                            fname, name
+                        )));
+                    }
+                    let got_ty = self.infer(fexpr)?;
+                    if got_ty != **want_ty {
+                        return Err(Error::Sema(format!(
+                            "field `{}.{}` expects {}, got {}",
+                            name,
+                            fname,
+                            type_name(want_ty),
+                            type_name(&got_ty)
+                        )));
+                    }
+                }
+                if seen.len() != def.fields.len() {
+                    let missing: Vec<&str> = def
+                        .fields
+                        .iter()
+                        .map(|f| f.name.as_str())
+                        .filter(|n| !seen.contains(n))
+                        .collect();
+                    return Err(Error::Sema(format!(
+                        "struct literal `{}` missing field(s): {}",
+                        name,
+                        missing.join(", ")
+                    )));
+                }
+                Ok(Type::Struct(name.clone()))
+            }
+            Expr::FieldAccess { target, field } => {
+                let target_ty = self.infer(target)?;
+                let struct_name = match &target_ty {
+                    Type::Struct(n) => n.clone(),
+                    other => {
+                        return Err(Error::Sema(format!(
+                            "field access on non-struct type {}",
+                            type_name(other)
+                        )));
+                    }
+                };
+                let def = self
+                    .structs
+                    .get(&struct_name)
+                    .ok_or_else(|| Error::Sema(format!("unknown struct `{}`", struct_name)))?;
+                let f = def.fields.iter().find(|f| f.name == *field).ok_or_else(|| {
+                    Error::Sema(format!(
+                        "struct `{}` has no field `{}`",
+                        struct_name, field
+                    ))
+                })?;
+                Ok(f.ty.clone())
+            }
             Expr::Pop(name) => {
                 let arr_ty = self.lookup(name).ok_or_else(|| {
                     Error::Sema(format!("pop on undefined variable `{}`", name))
@@ -730,7 +918,69 @@ fn type_name(t: &Type) -> String {
         Type::Bool => "bool".into(),
         Type::Deshnash => "deshnash".into(),
         Type::Array(inner) => format!("[{}]", type_name(inner)),
+        Type::Struct(name) => name.clone(),
     }
+}
+
+/// Walk a type and ensure every name it mentions is a known struct.
+/// Primitives and arrays trivially resolve; struct refs need lookup.
+fn check_type_resolvable(t: &Type, structs: &HashMap<String, StructDef>) -> Result<()> {
+    match t {
+        Type::Terah | Type::Bool | Type::Daqosh | Type::Deshnash => Ok(()),
+        Type::Array(inner) => check_type_resolvable(inner, structs),
+        Type::Struct(name) => {
+            if structs.contains_key(name) {
+                Ok(())
+            } else {
+                Err(Error::Sema(format!("unknown type `{}`", name)))
+            }
+        }
+    }
+}
+
+/// Detect cycles in struct field-of-struct dependencies. A cycle would
+/// imply infinite-size types since fields are by value (no pointers in
+/// Mott yet). Arrays are not value-recursive — `[T]` is one indirection
+/// in C, so a struct containing `[Self]` is fine for sizing.
+fn detect_struct_cycles(structs: &HashMap<String, StructDef>) -> Result<()> {
+    // DFS-based cycle detection. `visiting` tracks the current path;
+    // hitting a node already on the path means a cycle.
+    fn visit(
+        name: &str,
+        structs: &HashMap<String, StructDef>,
+        visited: &mut HashSet<String>,
+        visiting: &mut Vec<String>,
+    ) -> Result<()> {
+        if visited.contains(name) {
+            return Ok(());
+        }
+        if visiting.iter().any(|n| n == name) {
+            return Err(Error::Sema(format!(
+                "recursive struct: `{}` (cycle: {})",
+                name,
+                visiting.join(" -> ") + " -> " + name
+            )));
+        }
+        visiting.push(name.to_string());
+        let s = structs.get(name).expect("struct exists");
+        for field in &s.fields {
+            // Only direct value-typed struct refs count as a cycle. An
+            // `[Other]` field is fine — array is heap-indirect.
+            if let Type::Struct(dep) = &field.ty {
+                visit(dep, structs, visited, visiting)?;
+            }
+        }
+        visiting.pop();
+        visited.insert(name.to_string());
+        Ok(())
+    }
+
+    let mut visited = HashSet::new();
+    let mut visiting = Vec::new();
+    for name in structs.keys() {
+        visit(name, structs, &mut visited, &mut visiting)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -887,6 +1137,280 @@ fnc kort() {
         )
         .unwrap_err();
         assert!(format!("{}", err).contains("push type mismatch"));
+    }
+
+    #[test]
+    fn struct_literal_with_all_fields_passes() {
+        check_src(
+            r#"
+kep Point { x: terah, y: terah }
+fnc kort() {
+    xilit p: Point = Point { x: 3, y: 5 }
+    yazde("{p.x}")
+}
+"#,
+        )
+        .expect("should pass");
+    }
+
+    #[test]
+    fn struct_literal_missing_field_rejected() {
+        let err = check_src(
+            r#"
+kep Point { x: terah, y: terah }
+fnc kort() {
+    xilit p: Point = Point { x: 3 }
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{}", err).contains("missing field"));
+    }
+
+    #[test]
+    fn struct_literal_extra_field_rejected() {
+        let err = check_src(
+            r#"
+kep Point { x: terah }
+fnc kort() {
+    xilit p: Point = Point { x: 3, z: 5 }
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{}", err).contains("no field"));
+    }
+
+    #[test]
+    fn struct_literal_wrong_field_type_rejected() {
+        let err = check_src(
+            r#"
+kep Point { x: terah }
+fnc kort() {
+    xilit p: Point = Point { x: baqderg }
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{}", err).contains("expects terah"));
+    }
+
+    #[test]
+    fn struct_literal_duplicate_field_rejected() {
+        let err = check_src(
+            r#"
+kep T { x: terah }
+fnc kort() {
+    xilit t: T = T { x: 1, x: 2 }
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{}", err).contains("listed twice"));
+    }
+
+    #[test]
+    fn unknown_struct_literal_rejected() {
+        let err = check_src(
+            r#"
+fnc kort() {
+    xilit p = Bogus { x: 1 }
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{}", err).contains("unknown struct"));
+    }
+
+    #[test]
+    fn duplicate_struct_rejected() {
+        let err = check_src(
+            r#"
+kep Point { x: terah }
+kep Point { x: bool }
+fnc kort() {}
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{}", err).contains("duplicate struct"));
+    }
+
+    #[test]
+    fn recursive_struct_rejected() {
+        let err = check_src(
+            r#"
+kep Node { value: terah, next: Node }
+fnc kort() {}
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{}", err).contains("recursive struct"));
+    }
+
+    #[test]
+    fn array_of_struct_is_not_a_cycle() {
+        // [Self] is heap-indirect, so this is fine. (Doesn't compile to
+        // useful code without pop being type-stable, but parses + sema-passes.)
+        check_src(
+            r#"
+kep Node { value: terah, kids: [Node] }
+fnc kort() {}
+"#,
+        )
+        .expect("array-of-self should be allowed");
+    }
+
+    #[test]
+    fn unknown_field_type_rejected() {
+        let err = check_src(
+            r#"
+kep T { x: Bogus }
+fnc kort() {}
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{}", err).contains("unknown type"));
+    }
+
+    #[test]
+    fn field_access_on_non_struct_rejected() {
+        let err = check_src(
+            r#"
+fnc kort() {
+    xilit n: terah = 5
+    yazde("{n.x}")
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{}", err).contains("non-struct"));
+    }
+
+    #[test]
+    fn field_access_on_unknown_field_rejected() {
+        let err = check_src(
+            r#"
+kep Point { x: terah }
+fnc kort() {
+    xilit p: Point = Point { x: 1 }
+    yazde("{p.z}")
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{}", err).contains("no field `z`"));
+    }
+
+    #[test]
+    fn field_assign_type_mismatch_rejected() {
+        let err = check_src(
+            r#"
+kep Point { x: terah }
+fnc kort() {
+    xilit p: Point = Point { x: 1 }
+    p.x = baqderg
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{}", err).contains("type mismatch"));
+    }
+
+    #[test]
+    fn field_assign_unknown_field_rejected() {
+        let err = check_src(
+            r#"
+kep Point { x: terah }
+fnc kort() {
+    xilit p: Point = Point { x: 1 }
+    p.z = 5
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{}", err).contains("no field `z`"));
+    }
+
+    #[test]
+    fn struct_eq_rejected_with_helpful_message() {
+        let err = check_src(
+            r#"
+kep Point { x: terah }
+fnc kort() {
+    xilit lhs: Point = Point { x: 1 }
+    xilit rhs: Point = Point { x: 1 }
+    nagah sanna lhs == rhs {
+        yazde("eq")
+    }
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{}", err).contains("isn't supported yet"));
+    }
+
+    #[test]
+    fn yazde_struct_rejected() {
+        let err = check_src(
+            r#"
+kep Point { x: terah }
+fnc kort() {
+    xilit p: Point = Point { x: 1 }
+    yazde(p)
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{}", err).contains("can't print struct"));
+    }
+
+    #[test]
+    fn struct_in_interpolation_rejected() {
+        let err = check_src(
+            r#"
+kep Point { x: terah }
+fnc kort() {
+    xilit p: Point = Point { x: 1 }
+    yazde("{p}")
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{}", err).contains("cannot interpolate struct"));
+    }
+
+    #[test]
+    fn function_can_take_and_return_struct() {
+        check_src(
+            r#"
+kep Point { x: terah, y: terah }
+fnc swap(p: Point) -> Point {
+    yuxadalo Point { x: p.y, y: p.x }
+}
+fnc kort() {
+    xilit p: Point = Point { x: 1, y: 2 }
+    xilit q: Point = swap(p)
+    yazde("{q.x}")
+}
+"#,
+        )
+        .expect("should pass");
+    }
+
+    #[test]
+    fn nested_structs_work() {
+        check_src(
+            r#"
+kep Inner { v: terah }
+kep Outer { i: Inner, j: terah }
+fnc kort() {
+    xilit o: Outer = Outer { i: Inner { v: 5 }, j: 10 }
+    yazde("{o.i.v}")
+    yazde("{o.j}")
+}
+"#,
+        )
+        .expect("should pass");
     }
 
     #[test]

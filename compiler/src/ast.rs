@@ -17,6 +17,21 @@ pub struct Program {
 #[derive(Debug, Clone)]
 pub enum Item {
     Function(Function),
+    Struct(StructDef),
+}
+
+/// A `kep` declaration. Field order is preserved (matters for codegen
+/// layout, not for the language — fields are accessed by name).
+#[derive(Debug, Clone)]
+pub struct StructDef {
+    pub name: String,
+    pub fields: Vec<Field>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Field {
+    pub name: String,
+    pub ty: Type,
 }
 
 #[derive(Debug, Clone)]
@@ -40,6 +55,9 @@ pub enum Type {
     Deshnash,         // string
     Daqosh,           // float64
     Array(Box<Type>), // [T] — heap-backed array, fixed-size in MVP
+    /// User-defined struct, referenced by name. Resolved against
+    /// `kep` declarations during sema.
+    Struct(String),
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +113,14 @@ pub enum Stmt {
     /// the first arg to a bare identifier because we need it as an
     /// l-value (the runtime takes `&arr` to update data/len/cap atomically).
     Push { name: String, value: Expr },
+    /// `var.field = expr` — assign to a struct field. Like IndexAssign,
+    /// the target is restricted to a bare identifier in v0.3 (no chains
+    /// like `line.start.x = ...`); the workaround is local + reassign.
+    FieldAssign {
+        target: String,
+        field: String,
+        value: Expr,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -160,6 +186,18 @@ pub enum Expr {
     /// Same l-value restriction as push: first arg must be a bare ident so
     /// the runtime can update len in place. Runtime-aborts on empty array.
     Pop(String),
+    /// `Name { field: value, ... }` — struct construction. All fields
+    /// must be supplied (no defaults yet). Order in the AST follows
+    /// source order; sema reorders for type-check / codegen as needed.
+    StructLit {
+        name: String,
+        fields: Vec<(String, Expr)>,
+    },
+    /// `target.field` — read a struct field.
+    FieldAccess {
+        target: Box<Expr>,
+        field: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]

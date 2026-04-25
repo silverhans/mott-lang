@@ -1,5 +1,6 @@
 use crate::ast::{
-    self, BinOp, Block, Expr, Function, Item, IterSource, Param, Program, Stmt, Type, UnOp,
+    self, BinOp, Block, Expr, Field, Function, Item, IterSource, Param, Program, Stmt, StructDef,
+    Type, UnOp,
 };
 use crate::error::{Error, Result};
 use crate::lexer::Lexer;
@@ -8,11 +9,22 @@ use crate::token::{self, Token, TokenKind};
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    /// Whether `Ident { ... }` should be parsed as a struct literal here.
+    /// Set to false during the condition of `nagah sanna` / `cqachunna` /
+    /// `yallalc` because the trailing `{` belongs to the body block —
+    /// otherwise we'd misparse `nagah sanna p { ... }` as a struct lit.
+    /// Same trick Rust uses; users wanting a struct literal in a
+    /// condition wrap it in parens.
+    allow_struct_lit: bool,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            allow_struct_lit: true,
+        }
     }
 
     pub fn parse(&mut self) -> Result<Program> {
@@ -35,15 +47,56 @@ impl Parser {
     fn parse_item(&mut self) -> Result<Item> {
         match self.peek() {
             TokenKind::Fnc => Ok(Item::Function(self.parse_function()?)),
+            TokenKind::Kep => Ok(Item::Struct(self.parse_kep()?)),
             _ => {
                 let (line, col) = self.peek_pos();
                 Err(Error::Parse {
                     line,
                     col,
-                    message: format!("expected `fnc` at top level, got {:?}", self.peek()),
+                    message: format!(
+                        "expected `fnc` or `kep` at top level, got {:?}",
+                        self.peek()
+                    ),
                 })
             }
         }
+    }
+
+    /// `kep Name { f1: T1, f2: T2 }` — top-level struct declaration.
+    /// Trailing comma allowed. Empty `kep Empty {}` is also valid.
+    fn parse_kep(&mut self) -> Result<StructDef> {
+        self.expect(&TokenKind::Kep, "expected `kep`")?;
+        let name = self.expect_ident("expected struct name after `kep`")?;
+        self.expect(&TokenKind::LBrace, "expected `{` after struct name")?;
+        let mut fields = Vec::new();
+        // Skip leading newlines (synthesized `;`s) inside the braces.
+        while self.matches(&TokenKind::Semicolon) {}
+        if !self.check(&TokenKind::RBrace) {
+            loop {
+                let fname = self.expect_ident("expected field name")?;
+                self.expect(&TokenKind::Colon, "expected `:` after field name")?;
+                let ty = self.parse_type()?;
+                fields.push(Field { name: fname, ty });
+                // Separator: comma, semicolon (newline), or both.
+                let saw_comma = self.matches(&TokenKind::Comma);
+                while self.matches(&TokenKind::Semicolon) {}
+                if !saw_comma && !self.check(&TokenKind::RBrace) {
+                    // Need either a comma or end-of-list; otherwise the user
+                    // probably forgot a separator between fields.
+                    let (line, col) = self.peek_pos();
+                    return Err(Error::Parse {
+                        line,
+                        col,
+                        message: "expected `,` or newline between struct fields".into(),
+                    });
+                }
+                if self.check(&TokenKind::RBrace) {
+                    break;
+                }
+            }
+        }
+        self.expect(&TokenKind::RBrace, "expected `}` to close struct")?;
+        Ok(StructDef { name, fields })
     }
 
     fn parse_function(&mut self) -> Result<Function> {
@@ -118,6 +171,12 @@ impl Parser {
             TokenKind::Ident(_) if self.peek_kind_at(1) == Some(&TokenKind::LBracket) => {
                 self.parse_maybe_index_assign()
             }
+            // `ident.field = expr` — field assignment. Same shape as index
+            // assignment: try the assign path, fall back to expr-stmt if
+            // we don't actually see `=` after `.field`.
+            TokenKind::Ident(_) if self.peek_kind_at(1) == Some(&TokenKind::Dot) => {
+                self.parse_maybe_field_assign()
+            }
             _ => self.parse_expr_stmt(),
         }
     }
@@ -126,15 +185,53 @@ impl Parser {
         self.expect(&TokenKind::Yallalc, "expected `yallalc`")?;
         let var = self.expect_ident("expected loop variable after `yallalc`")?;
         self.expect(&TokenKind::Chu, "expected `chu` after loop variable")?;
-        let first = self.parse_expr()?;
+        // Same struct-lit restriction as `if` / `while`: the trailing `{`
+        // is the loop body, not a struct literal payload.
+        let first = self.parse_expr_no_struct_lit()?;
         let iter = if self.matches(&TokenKind::DotDot) {
-            let end = self.parse_expr()?;
+            let end = self.parse_expr_no_struct_lit()?;
             IterSource::Range { start: first, end }
         } else {
             IterSource::Array(first)
         };
         let body = self.parse_block()?;
         Ok(Stmt::ForEach { var, iter, body })
+    }
+
+    /// Called when `ident . ` is at the start of a statement. If it
+    /// matches `ident.field = expr` shape, produce a FieldAssign;
+    /// otherwise rewind and parse as an expression statement (the user
+    /// wrote something like `point.x` as a side-effect-free expression,
+    /// which is weird but legal).
+    fn parse_maybe_field_assign(&mut self) -> Result<Stmt> {
+        let start_pos = self.pos;
+        let target = self.expect_ident("expected identifier")?;
+        self.expect(&TokenKind::Dot, "expected `.`")?;
+        // Only a single-field chain in v0.3 — `a.b.c = ...` rejected here
+        // with a hint, since the codegen path doesn't support it yet.
+        let field = self.expect_ident("expected field name after `.`")?;
+        if self.check(&TokenKind::Dot) {
+            return Err(Error::Parse {
+                line: self.tokens[self.pos].line,
+                col: self.tokens[self.pos].col,
+                message: "chained field assignment (`a.b.c = ...`) isn't supported yet — \
+                          assign to a local copy and write it back"
+                    .into(),
+            });
+        }
+        if self.matches(&TokenKind::Assign) {
+            let value = self.parse_expr()?;
+            self.expect(&TokenKind::Semicolon, "expected `;` after assignment")?;
+            Ok(Stmt::FieldAssign {
+                target,
+                field,
+                value,
+            })
+        } else {
+            // Not an assignment — rewind and parse as expression statement.
+            self.pos = start_pos;
+            self.parse_expr_stmt()
+        }
     }
 
     /// Called when `ident [` is at the start of a statement. The expression
@@ -217,7 +314,9 @@ impl Parser {
         self.expect(&TokenKind::NagahSanna, "expected `nagah sanna`")?;
         // No required `(...)` around the condition: `{` delimits its end.
         // Grouping `(...)` inside the expression still works as a primary.
-        let cond = self.parse_expr()?;
+        // We disable struct literals in the condition so `nagah sanna p {`
+        // is parsed as condition+block, not as `Ident { ... }`.
+        let cond = self.parse_expr_no_struct_lit()?;
         let then_block = self.parse_block()?;
 
         // The lexer synthesizes `;` on newlines after `}`. Skip it so that
@@ -254,9 +353,21 @@ impl Parser {
 
     fn parse_while(&mut self) -> Result<Stmt> {
         self.expect(&TokenKind::Cqachunna, "expected `cqachunna`")?;
-        let cond = self.parse_expr()?;
+        let cond = self.parse_expr_no_struct_lit()?;
         let body = self.parse_block()?;
         Ok(Stmt::While { cond, body })
+    }
+
+    /// `parse_expr` with the struct-literal restriction enabled. Used in
+    /// condition contexts where `Ident { ... }` would be ambiguous with
+    /// the trailing block. Saves/restores the flag so nested expressions
+    /// (parens, function args) get their normal behavior.
+    fn parse_expr_no_struct_lit(&mut self) -> Result<Expr> {
+        let saved = self.allow_struct_lit;
+        self.allow_struct_lit = false;
+        let e = self.parse_expr();
+        self.allow_struct_lit = saved;
+        e
     }
 
     fn parse_return(&mut self) -> Result<Stmt> {
@@ -464,7 +575,7 @@ impl Parser {
             }
             TokenKind::Ident(name) => {
                 self.advance();
-                let mut expr = if self.matches(&TokenKind::LParen) {
+                let expr = if self.matches(&TokenKind::LParen) {
                     let mut args = Vec::new();
                     if !self.check(&TokenKind::RParen) {
                         args.push(self.parse_expr()?);
@@ -474,26 +585,29 @@ impl Parser {
                     }
                     self.expect(&TokenKind::RParen, "expected `)` after arguments")?;
                     Expr::Call { callee: name, args }
+                } else if self.allow_struct_lit && self.check(&TokenKind::LBrace) {
+                    // `Name { f1: e1, f2: e2 }` — struct literal. Disabled
+                    // when we're parsing a condition because `{` there
+                    // belongs to the block body.
+                    self.parse_struct_lit_body(name)?
                 } else {
                     Expr::Ident(name)
                 };
-                // Postfix `[idx]` — chained indexing supported even though
-                // the type system forbids nested arrays for now.
-                while self.matches(&TokenKind::LBracket) {
-                    let index = self.parse_expr()?;
-                    self.expect(&TokenKind::RBracket, "expected `]` after index")?;
-                    expr = Expr::Index {
-                        target: Box::new(expr),
-                        index: Box::new(index),
-                    };
-                }
-                Ok(expr)
+                self.apply_postfix(expr)
             }
             TokenKind::LParen => {
                 self.advance();
+                // Parens reset the struct-literal restriction: an
+                // explicit grouping says "this is an expression" and
+                // un-shadows whatever the outer context disabled.
+                let saved = self.allow_struct_lit;
+                self.allow_struct_lit = true;
                 let e = self.parse_expr()?;
+                self.allow_struct_lit = saved;
                 self.expect(&TokenKind::RParen, "expected `)`")?;
-                Ok(e)
+                // Postfix chains apply after `(...)` too: `(p).x`,
+                // `(arr)[0]`, `(get())[0].field` all need to work.
+                self.apply_postfix(e)
             }
             TokenKind::LBracket => {
                 // Array literal `[e1, e2, ...]`. Empty literals `[]` now
@@ -596,6 +710,63 @@ impl Parser {
         }
     }
 
+    /// Apply postfix `.field` / `[i]` chains to a primary expression.
+    /// Either can repeat — `arr[0].field.next[i]` is valid.
+    fn apply_postfix(&mut self, mut expr: Expr) -> Result<Expr> {
+        loop {
+            if self.matches(&TokenKind::LBracket) {
+                let index = self.parse_expr()?;
+                self.expect(&TokenKind::RBracket, "expected `]` after index")?;
+                expr = Expr::Index {
+                    target: Box::new(expr),
+                    index: Box::new(index),
+                };
+            } else if self.matches(&TokenKind::Dot) {
+                let field = self.expect_ident("expected field name after `.`")?;
+                expr = Expr::FieldAccess {
+                    target: Box::new(expr),
+                    field,
+                };
+            } else {
+                break;
+            }
+        }
+        Ok(expr)
+    }
+
+    /// Parse the body of a struct literal — caller has already consumed
+    /// the type name and the `{`. Wait, that's wrong — caller has only
+    /// the name; we still need to eat the `{` ourselves. Field/value
+    /// pairs separated by `,` (newlines also accepted, like the decl).
+    fn parse_struct_lit_body(&mut self, name: String) -> Result<Expr> {
+        self.expect(&TokenKind::LBrace, "expected `{` for struct literal")?;
+        let mut fields = Vec::new();
+        while self.matches(&TokenKind::Semicolon) {}
+        if !self.check(&TokenKind::RBrace) {
+            loop {
+                let fname = self.expect_ident("expected field name in struct literal")?;
+                self.expect(&TokenKind::Colon, "expected `:` after field name")?;
+                let value = self.parse_expr()?;
+                fields.push((fname, value));
+                let saw_comma = self.matches(&TokenKind::Comma);
+                while self.matches(&TokenKind::Semicolon) {}
+                if !saw_comma && !self.check(&TokenKind::RBrace) {
+                    let (line, col) = self.peek_pos();
+                    return Err(Error::Parse {
+                        line,
+                        col,
+                        message: "expected `,` or newline between struct literal fields".into(),
+                    });
+                }
+                if self.check(&TokenKind::RBrace) {
+                    break;
+                }
+            }
+        }
+        self.expect(&TokenKind::RBrace, "expected `}` to close struct literal")?;
+        Ok(Expr::StructLit { name, fields })
+    }
+
     /// Convert a lex-time string part into an AST string part.
     /// Literals pass through; interpolations get their captured source
     /// re-lexed and re-parsed as a single expression.
@@ -647,6 +818,13 @@ impl Parser {
             TokenKind::Bool => Type::Bool,
             TokenKind::Deshnash => Type::Deshnash,
             TokenKind::Daqosh => Type::Daqosh,
+            // Identifier in a type position is a user-defined struct
+            // reference. Sema validates the name actually exists.
+            TokenKind::Ident(name) => {
+                let name = name.clone();
+                self.advance();
+                return Ok(Type::Struct(name));
+            }
             other => {
                 return Err(Error::Parse {
                     line,
@@ -745,8 +923,10 @@ mod tests {
 
     fn only_function(p: &Program) -> &Function {
         assert_eq!(p.items.len(), 1);
-        let Item::Function(f) = &p.items[0];
-        f
+        match &p.items[0] {
+            Item::Function(f) => f,
+            other => panic!("expected single function item, got {:?}", other),
+        }
     }
 
     #[test]
@@ -798,6 +978,174 @@ mod tests {
         let msg = format!("{}", err);
         assert!(msg.contains("type annotation"), "got: {}", msg);
         assert!(msg.contains("initializer"), "got: {}", msg);
+    }
+
+    #[test]
+    fn kep_declaration_parses() {
+        let p = parse_ok(
+            r#"
+kep Point {
+    x: terah,
+    y: terah,
+}
+fnc kort() {}
+"#,
+        );
+        assert_eq!(p.items.len(), 2);
+        match &p.items[0] {
+            Item::Struct(s) => {
+                assert_eq!(s.name, "Point");
+                assert_eq!(s.fields.len(), 2);
+                assert_eq!(s.fields[0].name, "x");
+                assert_eq!(s.fields[1].name, "y");
+                assert_eq!(s.fields[0].ty, Type::Terah);
+            }
+            other => panic!("expected struct, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn kep_with_trailing_comma_parses() {
+        // Trailing comma allowed (matches Rust convention).
+        let p = parse_ok(
+            r#"
+kep T { foo: terah, bar: bool, }
+fnc kort() {}
+"#,
+        );
+        match &p.items[0] {
+            Item::Struct(s) => assert_eq!(s.fields.len(), 2),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn struct_literal_in_let_parses() {
+        let p = parse_ok(
+            r#"
+kep Point { x: terah, y: terah }
+fnc kort() {
+    xilit p: Point = Point { x: 3, y: 5 }
+}
+"#,
+        );
+        // Find the kort function, check it has Stmt::Let with StructLit value.
+        match &p.items[1] {
+            Item::Function(f) => match &f.body.stmts[0] {
+                Stmt::Let { value, .. } => {
+                    assert!(matches!(value, Some(Expr::StructLit { .. })));
+                }
+                other => panic!("expected Let, got {:?}", other),
+            },
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn struct_literal_disabled_in_if_condition() {
+        // `nagah sanna p { ... }` parses as cond=Ident("p"), body={...},
+        // not as `Ident("p") { ... }` struct literal. Otherwise we'd
+        // misparse simple ident conditions.
+        let p = parse_ok(
+            r#"
+kep T { x: terah }
+fnc kort() {
+    xilit b = baqderg
+    nagah sanna b {
+        yazde("yes")
+    }
+}
+"#,
+        );
+        match &p.items[1] {
+            Item::Function(f) => match &f.body.stmts[1] {
+                Stmt::If { cond, .. } => {
+                    assert!(matches!(cond, Expr::Ident(_)));
+                }
+                other => panic!("expected If, got {:?}", other),
+            },
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn struct_literal_in_paren_works_in_condition() {
+        // Wrapping in parens un-shadows the struct-literal restriction.
+        // (Practically silly here since == on structs is rejected by sema,
+        // but the parser doesn't know that — this test is purely about
+        // grammar.)
+        parse_ok(
+            r#"
+kep T { x: terah }
+fnc kort() {
+    xilit p: T = T { x: 1 }
+    nagah sanna (T { x: 1 }).x == p.x {
+        yazde("ok")
+    }
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn field_assignment_parses() {
+        let p = parse_ok(
+            r#"
+kep T { x: terah }
+fnc kort() {
+    xilit p: T = T { x: 1 }
+    p.x = 5
+}
+"#,
+        );
+        match &p.items[1] {
+            Item::Function(f) => match &f.body.stmts[1] {
+                Stmt::FieldAssign {
+                    target,
+                    field,
+                    value,
+                } => {
+                    assert_eq!(target, "p");
+                    assert_eq!(field, "x");
+                    assert!(matches!(value, Expr::Integer(5)));
+                }
+                other => panic!("expected FieldAssign, got {:?}", other),
+            },
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn chained_field_assignment_rejected() {
+        // `a.b.c = ...` not supported in v0.3 — give a targeted error.
+        let err = parse_source(
+            r#"
+kep Inner { x: terah }
+kep Outer { i: Inner }
+fnc kort() {
+    xilit o: Outer = Outer { i: Inner { x: 1 } }
+    o.i.x = 5
+}
+"#,
+        )
+        .unwrap_err();
+        assert!(format!("{}", err).contains("chained field"));
+    }
+
+    #[test]
+    fn field_access_chain_in_expression_works() {
+        // Reading is fine — `o.i.x` parses as nested FieldAccess.
+        // Only assignment is restricted.
+        parse_ok(
+            r#"
+kep Inner { x: terah }
+kep Outer { i: Inner }
+fnc kort() {
+    xilit o: Outer = Outer { i: Inner { x: 1 } }
+    yazde("{o.i.x}")
+}
+"#,
+        );
     }
 
     #[test]

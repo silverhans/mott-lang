@@ -26,6 +26,7 @@ pub enum TokenKind {
     ToDaqosh,
     Push,
     Pop,
+    Kep,
     Baqderg,
     Xarco,
     A,
@@ -48,6 +49,7 @@ pub enum TokenKind {
     Comma,
     Colon,
     Arrow,
+    Dot,
     DotDot,
 
     // Operators

@@ -1,0 +1,66 @@
+// Демонстрирует структуры (`kep`):
+//   - объявление с полями
+//   - конструирование `Name { field: value }`
+//   - доступ через точку
+//   - передача в функции (по значению)
+//   - возврат структуры
+//   - массивы структур + push/pop/yallalc
+//   - вложенные структуры (Line из двух Point)
+
+kep Point {
+    x: daqosh,
+    y: daqosh,
+}
+
+kep Line {
+    start: Point,
+    end: Point,
+}
+
+fnc origin() -> Point {
+    yuxadalo Point { x: 0.0, y: 0.0 }
+}
+
+fnc move_by(p: Point, dx: daqosh, dy: daqosh) -> Point {
+    yuxadalo Point { x: p.x + dx, y: p.y + dy }
+}
+
+fnc length_squared(l: Line) -> daqosh {
+    xilit dx: daqosh = l.end.x - l.start.x
+    xilit dy: daqosh = l.end.y - l.start.y
+    yuxadalo dx * dx + dy * dy
+}
+
+fnc kort() {
+    yazde("=== одна точка ===")
+    xilit p: Point = origin()
+    p = move_by(p, 3.0, 4.0)
+    yazde("p = ({p.x}, {p.y})")
+
+    p.x = p.x + 1.0
+    yazde("после p.x += 1: ({p.x}, {p.y})")
+
+    yazde("")
+    yazde("=== линия ===")
+    xilit l: Line = Line {
+        start: Point { x: 0.0, y: 0.0 },
+        end: p,
+    }
+    yazde("длина в квадрате: {length_squared(l)}")
+
+    yazde("")
+    yazde("=== массив точек ===")
+    xilit pts: [Point] = []
+    push(pts, Point { x: 1.0, y: 1.0 })
+    push(pts, Point { x: 2.0, y: 4.0 })
+    push(pts, Point { x: 3.0, y: 9.0 })
+    push(pts, p)
+
+    yazde("всего: {baram(pts)}")
+    yallalc q chu pts {
+        yazde("  ({q.x}, {q.y})")
+    }
+
+    xilit last: Point = pop(pts)
+    yazde("снял: ({last.x}, {last.y}); осталось {baram(pts)}")
+}

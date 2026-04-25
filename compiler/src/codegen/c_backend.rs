@@ -13,11 +13,12 @@
 //!   compound-literal array of `mott_str`s.
 //! - `yazde` dispatches per type to a runtime helper picked at codegen.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use crate::ast::{
-    BinOp, Block, Expr, Function, Item, IterSource, Program, Stmt, StringPart, Type, UnOp,
+    BinOp, Block, Expr, Function, Item, IterSource, Program, Stmt, StringPart, StructDef, Type,
+    UnOp,
 };
 use crate::codegen::Backend;
 use crate::error::Result;
@@ -53,57 +54,170 @@ struct Emitter {
     /// helper).
     scopes: Vec<HashMap<String, Type>>,
     functions: HashMap<String, FuncSig>,
+    /// User-defined structs, keyed by name. Used to look up field order
+    /// at struct-literal emit time so we can emit fields in declaration
+    /// order regardless of source-literal order.
+    structs: HashMap<String, StructDef>,
 }
 
 impl Emitter {
     fn new(program: &Program) -> Self {
         let mut functions = HashMap::new();
+        let mut structs = HashMap::new();
         for item in &program.items {
-            let Item::Function(f) = item;
-            functions.insert(
-                f.name.clone(),
-                FuncSig {
-                    return_type: f.return_type.clone(),
-                },
-            );
+            match item {
+                Item::Function(f) => {
+                    functions.insert(
+                        f.name.clone(),
+                        FuncSig {
+                            return_type: f.return_type.clone(),
+                        },
+                    );
+                }
+                Item::Struct(s) => {
+                    structs.insert(s.name.clone(), s.clone());
+                }
+            }
         }
         Self {
             out: String::new(),
             indent: 0,
             scopes: Vec::new(),
             functions,
+            structs,
         }
     }
 
     fn emit_program(&mut self, program: &Program) {
         self.write_prelude();
 
+        // Emit struct typedefs in topological order: each struct must be
+        // fully defined before any other struct that contains it by value.
+        // Sema already verified there are no cycles.
+        let struct_order = topo_sort_structs(&self.structs);
+        for s in &struct_order {
+            self.emit_struct_typedef(s);
+        }
+        if !struct_order.is_empty() {
+            self.writeln("");
+        }
+
+        // Per-struct array machinery: any user struct that's used as
+        // an array element type needs its own `mott_arr_<Name>` typedef
+        // and ops. Collect those names by scanning the program for
+        // `[StructName]` types.
+        let struct_array_uses = collect_struct_array_uses(program);
+        for name in &struct_array_uses {
+            self.emit_struct_array_machinery(name);
+        }
+        if !struct_array_uses.is_empty() {
+            self.writeln("");
+        }
+
         // Forward-declare every non-entry function so call-before-define works.
         let mut has_decls = false;
         for item in &program.items {
-            let Item::Function(f) = item;
-            if f.name == "kort" {
-                continue;
+            if let Item::Function(f) = item {
+                if f.name == "kort" {
+                    continue;
+                }
+                self.emit_function_signature(f);
+                self.writeln(";");
+                has_decls = true;
             }
-            self.emit_function_signature(f);
-            self.writeln(";");
-            has_decls = true;
         }
         if has_decls {
             self.writeln("");
         }
 
         for item in &program.items {
-            let Item::Function(f) = item;
-            self.emit_function(f);
-            self.writeln("");
+            if let Item::Function(f) = item {
+                self.emit_function(f);
+                self.writeln("");
+            }
         }
     }
 
+    fn emit_struct_typedef(&mut self, s: &StructDef) {
+        self.writeln(&format!("typedef struct {} {{", s.name));
+        for field in &s.fields {
+            self.writeln(&format!("    {} {};", type_to_c(&field.ty), field.name));
+        }
+        // Empty structs need a placeholder field (C forbids zero-field
+        // structs; gcc accepts them as extension but clang -std=c11 warns).
+        if s.fields.is_empty() {
+            self.writeln("    char __mott_empty;");
+        }
+        self.writeln(&format!("}} {};", s.name));
+    }
+
+    /// Emit per-struct array typedef + new/push/pop helpers as `static
+    /// inline` so they can sit in any compilation unit. We only emit
+    /// these for structs actually used as array elements.
+    fn emit_struct_array_machinery(&mut self, name: &str) {
+        // Type
+        self.writeln(&format!(
+            "typedef struct {{ {0} *data; size_t len; size_t cap; }} mott_arr_{0};",
+            name
+        ));
+        // _new
+        self.writeln(&format!(
+            "static inline mott_arr_{0} mott_arr_{0}_new(size_t n, const {0} *src) {{",
+            name
+        ));
+        self.writeln("    size_t cap = n > 4 ? n : 4;");
+        self.writeln(&format!(
+            "    {0} *data = ({0} *)malloc(cap * sizeof({0}));",
+            name
+        ));
+        self.writeln("    if (!data) { fputs(\"mott runtime: out of memory\\n\", stderr); abort(); }");
+        self.writeln(&format!(
+            "    if (n > 0) memcpy(data, src, n * sizeof({0}));",
+            name
+        ));
+        self.writeln(&format!(
+            "    return (mott_arr_{0}){{ .data = data, .len = n, .cap = cap }};",
+            name
+        ));
+        self.writeln("}");
+        // _push
+        self.writeln(&format!(
+            "static inline void mott_arr_{0}_push(mott_arr_{0} *a, {0} x) {{",
+            name
+        ));
+        self.writeln("    if (a->len == a->cap) {");
+        self.writeln("        size_t new_cap = a->cap * 2;");
+        self.writeln(&format!(
+            "        a->data = ({0} *)realloc(a->data, new_cap * sizeof({0}));",
+            name
+        ));
+        self.writeln("        if (!a->data) { fputs(\"mott runtime: out of memory\\n\", stderr); abort(); }");
+        self.writeln("        a->cap = new_cap;");
+        self.writeln("    }");
+        self.writeln("    a->data[a->len++] = x;");
+        self.writeln("}");
+        // _pop
+        self.writeln(&format!(
+            "static inline {0} mott_arr_{0}_pop(mott_arr_{0} *a) {{",
+            name
+        ));
+        self.writeln("    if (a->len == 0) { fputs(\"mott runtime: pop on empty array\\n\", stderr); abort(); }");
+        self.writeln("    return a->data[--a->len];");
+        self.writeln("}");
+    }
+
     fn write_prelude(&mut self) {
-        self.writeln("/* Generated by mott compiler v0.2 — do not edit. */");
+        self.writeln("/* Generated by mott compiler v0.3 — do not edit. */");
         self.writeln("#include <stdbool.h>");
         self.writeln("#include <stdint.h>");
+        // The runtime header pulls in stddef for size_t. We additionally
+        // need stdlib (malloc/realloc/abort) and string (memcpy) and
+        // stdio (fputs) because the per-struct array machinery emits
+        // inline functions that use them — even when no user struct
+        // requires them, the cost is just a few include lines.
+        self.writeln("#include <stdio.h>");
+        self.writeln("#include <stdlib.h>");
+        self.writeln("#include <string.h>");
         self.writeln("#include \"mott_rt.h\"");
         self.writeln("");
     }
@@ -364,7 +478,9 @@ impl Emitter {
                     Type::Daqosh => "mott_yazde_daqosh",
                     Type::Bool => "mott_yazde_bool",
                     Type::Deshnash => "mott_yazde_deshnash",
-                    Type::Array(_) => unreachable!("sema rejects yazde(array)"),
+                    Type::Array(_) | Type::Struct(_) => {
+                        unreachable!("sema rejects yazde of array/struct")
+                    }
                 };
                 self.write_indent();
                 self.write(&format!("{}(", helper));
@@ -399,6 +515,16 @@ impl Emitter {
                 self.write(&format!("{}(&{}, ", push_fn, name));
                 self.emit_expr(value);
                 self.writeln(");");
+            }
+            Stmt::FieldAssign {
+                target,
+                field,
+                value,
+            } => {
+                self.write_indent();
+                self.write(&format!("{}.{} = ", target, field));
+                self.emit_expr(value);
+                self.writeln(";");
             }
         }
     }
@@ -552,6 +678,40 @@ impl Emitter {
                 let pop_fn = array_pop_name(&elem_ty);
                 self.write(&format!("{}(&{})", pop_fn, name));
             }
+            Expr::StructLit { name, fields } => {
+                // Emit fields in declaration order, regardless of source
+                // order. `((Point){.x = 3, .y = 5})` — designator init.
+                let def = self
+                    .structs
+                    .get(name)
+                    .expect("sema ensures struct exists")
+                    .clone();
+                self.write(&format!("(({}){{", name));
+                let by_name: HashMap<&str, &Expr> = fields
+                    .iter()
+                    .map(|(n, e)| (n.as_str(), e))
+                    .collect();
+                for (i, field) in def.fields.iter().enumerate() {
+                    if i > 0 {
+                        self.write(", ");
+                    }
+                    self.write(&format!(".{} = ", field.name));
+                    let expr = by_name
+                        .get(field.name.as_str())
+                        .expect("sema ensures all fields supplied");
+                    self.emit_expr(expr);
+                }
+                if def.fields.is_empty() {
+                    // Empty structs got a `__mott_empty` placeholder; init it.
+                    self.write(".__mott_empty = 0");
+                }
+                self.write("})");
+            }
+            Expr::FieldAccess { target, field } => {
+                self.write("(");
+                self.emit_expr(target);
+                self.write(&format!(".{})", field));
+            }
         }
     }
 
@@ -603,7 +763,9 @@ impl Emitter {
                             self.emit_expr(expr);
                             self.write(")");
                         }
-                        Type::Array(_) => unreachable!("sema rejects array interpolation"),
+                        Type::Array(_) | Type::Struct(_) => {
+                            unreachable!("sema rejects array/struct interpolation")
+                        }
                     }
                 }
             }
@@ -658,6 +820,21 @@ impl Emitter {
                 Type::Array(inner) => *inner,
                 _ => unreachable!("sema ensures pop target is array"),
             },
+            Expr::StructLit { name, .. } => Type::Struct(name.clone()),
+            Expr::FieldAccess { target, field } => {
+                let target_ty = self.type_of(target);
+                let struct_name = match target_ty {
+                    Type::Struct(n) => n,
+                    _ => unreachable!("sema ensures field access on struct"),
+                };
+                let def = self.structs.get(&struct_name).expect("sema");
+                def.fields
+                    .iter()
+                    .find(|f| f.name == *field)
+                    .expect("sema ensures field exists")
+                    .ty
+                    .clone()
+            }
         }
     }
 
@@ -698,6 +875,185 @@ impl Emitter {
     }
 }
 
+/// Sort structs so each comes after its by-value dependencies. Sema has
+/// already verified no cycles, so DFS is safe. Arrays don't count as
+/// value-dependencies — `[T]` is heap-indirect.
+fn topo_sort_structs(structs: &HashMap<String, StructDef>) -> Vec<StructDef> {
+    fn visit(
+        name: &str,
+        structs: &HashMap<String, StructDef>,
+        visited: &mut HashSet<String>,
+        out: &mut Vec<StructDef>,
+    ) {
+        if visited.contains(name) {
+            return;
+        }
+        visited.insert(name.to_string());
+        let s = match structs.get(name) {
+            Some(s) => s,
+            None => return,
+        };
+        for field in &s.fields {
+            if let Type::Struct(dep) = &field.ty {
+                visit(dep, structs, visited, out);
+            }
+        }
+        out.push(s.clone());
+    }
+    let mut visited = HashSet::new();
+    let mut out = Vec::new();
+    // Sort names for deterministic output (HashMap iter is random-ish).
+    let mut names: Vec<&String> = structs.keys().collect();
+    names.sort();
+    for name in names {
+        visit(name, structs, &mut visited, &mut out);
+    }
+    out
+}
+
+/// Walk every type used in the program and collect struct names that
+/// appear as the element of an array. Each such name needs its own
+/// `mott_arr_<Name>` machinery in the emitted C.
+fn collect_struct_array_uses(program: &Program) -> Vec<String> {
+    fn walk_type(t: &Type, out: &mut HashSet<String>) {
+        match t {
+            Type::Array(inner) => {
+                if let Type::Struct(name) = inner.as_ref() {
+                    out.insert(name.clone());
+                }
+                walk_type(inner, out);
+            }
+            _ => {}
+        }
+    }
+    fn walk_expr(e: &Expr, out: &mut HashSet<String>) {
+        match e {
+            Expr::Binary { left, right, .. } => {
+                walk_expr(left, out);
+                walk_expr(right, out);
+            }
+            Expr::Unary { expr, .. } => walk_expr(expr, out),
+            Expr::LogicAnd(es) | Expr::LogicOr(es) => {
+                for e in es {
+                    walk_expr(e, out);
+                }
+            }
+            Expr::Call { args, .. } => {
+                for a in args {
+                    walk_expr(a, out);
+                }
+            }
+            Expr::ArrayLit(es) => {
+                for e in es {
+                    walk_expr(e, out);
+                }
+            }
+            Expr::Index { target, index } => {
+                walk_expr(target, out);
+                walk_expr(index, out);
+            }
+            Expr::Baram(e)
+            | Expr::ParseTerah(e)
+            | Expr::ParseDaqosh(e)
+            | Expr::ToTerah(e)
+            | Expr::ToDaqosh(e) => walk_expr(e, out),
+            Expr::FieldAccess { target, .. } => walk_expr(target, out),
+            Expr::StructLit { fields, .. } => {
+                for (_, fe) in fields {
+                    walk_expr(fe, out);
+                }
+            }
+            Expr::String(parts) => {
+                for p in parts {
+                    if let StringPart::Interpolation(e) = p {
+                        walk_expr(e, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    fn walk_stmt(s: &Stmt, out: &mut HashSet<String>) {
+        match s {
+            Stmt::Let { ty, value, .. } => {
+                if let Some(t) = ty {
+                    walk_type(t, out);
+                }
+                if let Some(v) = value {
+                    walk_expr(v, out);
+                }
+            }
+            Stmt::Assign { value, .. } => walk_expr(value, out),
+            Stmt::IndexAssign { index, value, .. } => {
+                walk_expr(index, out);
+                walk_expr(value, out);
+            }
+            Stmt::FieldAssign { value, .. } => walk_expr(value, out),
+            Stmt::If {
+                cond,
+                then_block,
+                else_block,
+            } => {
+                walk_expr(cond, out);
+                for s in &then_block.stmts {
+                    walk_stmt(s, out);
+                }
+                if let Some(eb) = else_block {
+                    for s in &eb.stmts {
+                        walk_stmt(s, out);
+                    }
+                }
+            }
+            Stmt::While { cond, body } => {
+                walk_expr(cond, out);
+                for s in &body.stmts {
+                    walk_stmt(s, out);
+                }
+            }
+            Stmt::ForEach { iter, body, .. } => {
+                match iter {
+                    IterSource::Array(e) => walk_expr(e, out),
+                    IterSource::Range { start, end } => {
+                        walk_expr(start, out);
+                        walk_expr(end, out);
+                    }
+                }
+                for s in &body.stmts {
+                    walk_stmt(s, out);
+                }
+            }
+            Stmt::Return(Some(e)) | Stmt::Print(e) | Stmt::ExprStmt(e) => walk_expr(e, out),
+            Stmt::Push { value, .. } => walk_expr(value, out),
+            _ => {}
+        }
+    }
+
+    let mut set: HashSet<String> = HashSet::new();
+    for item in &program.items {
+        match item {
+            Item::Function(f) => {
+                for p in &f.params {
+                    walk_type(&p.ty, &mut set);
+                }
+                if let Some(rt) = &f.return_type {
+                    walk_type(rt, &mut set);
+                }
+                for s in &f.body.stmts {
+                    walk_stmt(s, &mut set);
+                }
+            }
+            Item::Struct(s) => {
+                for f in &s.fields {
+                    walk_type(&f.ty, &mut set);
+                }
+            }
+        }
+    }
+    let mut v: Vec<String> = set.into_iter().collect();
+    v.sort();
+    v
+}
+
 /// If `b` is a single-stmt block containing only an `If`, return its pieces.
 /// This is the shape the parser produces for `khi nagah sanna` — letting
 /// the backend re-emit `else if` instead of `else { if ... }`.
@@ -721,43 +1077,52 @@ fn type_to_c(t: &Type) -> String {
         Type::Daqosh => "double".into(),
         Type::Bool => "bool".into(),
         Type::Deshnash => "mott_str".into(),
+        Type::Struct(name) => name.clone(),
         Type::Array(inner) => match inner.as_ref() {
             Type::Terah => "mott_arr_terah".into(),
             Type::Daqosh => "mott_arr_daqosh".into(),
             Type::Bool => "mott_arr_bool".into(),
             Type::Deshnash => "mott_arr_deshnash".into(),
+            // Per-struct array typedefs are emitted by the program prelude
+            // (see `emit_struct_array_machinery`).
+            Type::Struct(name) => format!("mott_arr_{}", name),
             Type::Array(_) => "mott_arr_nested".into(), // unreachable — rejected by sema
         },
     }
 }
 
-fn array_ctor_name(t: &Type) -> &'static str {
+/// Names are returned as owned strings now that user-defined struct
+/// names participate. The static-str cases still resolve cheaply.
+fn array_ctor_name(t: &Type) -> String {
     match t {
-        Type::Terah => "mott_arr_terah_new",
-        Type::Daqosh => "mott_arr_daqosh_new",
-        Type::Bool => "mott_arr_bool_new",
-        Type::Deshnash => "mott_arr_deshnash_new",
-        Type::Array(_) => "mott_arr_nested_new",
+        Type::Terah => "mott_arr_terah_new".into(),
+        Type::Daqosh => "mott_arr_daqosh_new".into(),
+        Type::Bool => "mott_arr_bool_new".into(),
+        Type::Deshnash => "mott_arr_deshnash_new".into(),
+        Type::Struct(name) => format!("mott_arr_{}_new", name),
+        Type::Array(_) => "mott_arr_nested_new".into(),
     }
 }
 
-fn array_push_name(t: &Type) -> &'static str {
+fn array_push_name(t: &Type) -> String {
     match t {
-        Type::Terah => "mott_arr_terah_push",
-        Type::Daqosh => "mott_arr_daqosh_push",
-        Type::Bool => "mott_arr_bool_push",
-        Type::Deshnash => "mott_arr_deshnash_push",
-        Type::Array(_) => "mott_arr_nested_push",
+        Type::Terah => "mott_arr_terah_push".into(),
+        Type::Daqosh => "mott_arr_daqosh_push".into(),
+        Type::Bool => "mott_arr_bool_push".into(),
+        Type::Deshnash => "mott_arr_deshnash_push".into(),
+        Type::Struct(name) => format!("mott_arr_{}_push", name),
+        Type::Array(_) => "mott_arr_nested_push".into(),
     }
 }
 
-fn array_pop_name(t: &Type) -> &'static str {
+fn array_pop_name(t: &Type) -> String {
     match t {
-        Type::Terah => "mott_arr_terah_pop",
-        Type::Daqosh => "mott_arr_daqosh_pop",
-        Type::Bool => "mott_arr_bool_pop",
-        Type::Deshnash => "mott_arr_deshnash_pop",
-        Type::Array(_) => "mott_arr_nested_pop",
+        Type::Terah => "mott_arr_terah_pop".into(),
+        Type::Daqosh => "mott_arr_daqosh_pop".into(),
+        Type::Bool => "mott_arr_bool_pop".into(),
+        Type::Deshnash => "mott_arr_deshnash_pop".into(),
+        Type::Struct(name) => format!("mott_arr_{}_pop", name),
+        Type::Array(_) => "mott_arr_nested_pop".into(),
     }
 }
 
@@ -773,6 +1138,10 @@ fn zero_value(t: &Type) -> String {
             let ctor = array_ctor_name(inner);
             format!("{}(0, NULL)", ctor)
         }
+        // C compound literal `(Foo){0}` zero-initializes every field
+        // recursively via the fact that designated initializers default
+        // any unmentioned field to zero. Works for any struct shape.
+        Type::Struct(name) => format!("(({}){{0}})", name),
     }
 }
 
@@ -1266,6 +1635,125 @@ fnc kort() {
 "#,
         );
         assert!(c.contains("mott_str_from_bool("), "got:\n{}", c);
+    }
+
+    #[test]
+    fn struct_typedef_emitted() {
+        let c = compile_ok(
+            r#"
+kep Point { x: terah, y: terah }
+fnc kort() {
+    xilit p: Point = Point { x: 3, y: 5 }
+}
+"#,
+        );
+        assert!(c.contains("typedef struct Point {"), "got:\n{}", c);
+        assert!(c.contains("int64_t x;"), "got:\n{}", c);
+        assert!(c.contains("int64_t y;"), "got:\n{}", c);
+        assert!(c.contains("} Point;"), "got:\n{}", c);
+    }
+
+    #[test]
+    fn struct_literal_emits_compound_literal_in_decl_order() {
+        // Field initializer order in source uses `y, x` but declaration
+        // is `x, y`. Codegen emits in declaration order so the C output
+        // is stable regardless of source ordering.
+        let c = compile_ok(
+            r#"
+kep Point { x: terah, y: terah }
+fnc kort() {
+    xilit p: Point = Point { y: 5, x: 3 }
+    yazde("{p.x}")
+}
+"#,
+        );
+        // Both .x = 3 and .y = 5 should appear, in declaration order.
+        let x_pos = c.find(".x = ").unwrap();
+        let y_pos = c.find(".y = ").unwrap();
+        assert!(x_pos < y_pos, "fields should be in decl order, got:\n{}", c);
+    }
+
+    #[test]
+    fn field_access_emits_member_access() {
+        let c = compile_ok(
+            r#"
+kep Point { x: terah, y: terah }
+fnc kort() {
+    xilit p: Point = Point { x: 3, y: 5 }
+    yazde("{p.x}")
+}
+"#,
+        );
+        assert!(c.contains("p.x"), "got:\n{}", c);
+    }
+
+    #[test]
+    fn field_assignment_emits_member_assign() {
+        let c = compile_ok(
+            r#"
+kep Point { x: terah, y: terah }
+fnc kort() {
+    xilit p: Point = Point { x: 3, y: 5 }
+    p.x = 10
+}
+"#,
+        );
+        assert!(c.contains("p.x = "), "got:\n{}", c);
+    }
+
+    #[test]
+    fn array_of_struct_emits_per_struct_machinery() {
+        let c = compile_ok(
+            r#"
+kep Point { x: terah, y: terah }
+fnc kort() {
+    xilit pts: [Point] = []
+    push(pts, Point { x: 1, y: 2 })
+}
+"#,
+        );
+        assert!(
+            c.contains("typedef struct { Point *data; size_t len; size_t cap; } mott_arr_Point;"),
+            "got:\n{}",
+            c
+        );
+        assert!(c.contains("mott_arr_Point_new"), "got:\n{}", c);
+        assert!(c.contains("mott_arr_Point_push"), "got:\n{}", c);
+    }
+
+    #[test]
+    fn struct_typedefs_emitted_in_topological_order() {
+        // Outer depends on Inner; Inner must be defined first.
+        let c = compile_ok(
+            r#"
+kep Outer { i: Inner }
+kep Inner { v: terah }
+fnc kort() {
+    xilit o: Outer = Outer { i: Inner { v: 5 } }
+}
+"#,
+        );
+        let inner_pos = c.find("typedef struct Inner").unwrap();
+        let outer_pos = c.find("typedef struct Outer").unwrap();
+        assert!(
+            inner_pos < outer_pos,
+            "Inner must come before Outer, got:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn uninit_struct_decl_zero_initializes() {
+        let c = compile_ok(
+            r#"
+kep Point { x: terah, y: terah }
+fnc kort() {
+    xilit p: Point
+    p.x = 5
+}
+"#,
+        );
+        assert!(c.contains("Point p = ((Point){0});"), "got:\n{}", c);
     }
 
     #[test]

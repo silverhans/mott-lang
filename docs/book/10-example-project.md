@@ -321,4 +321,4 @@ mott stats.mott -o stats && ./stats
 
 ---
 
-**[← предыдущая: Массивы](08-arrays.md) | [справочник →](appendix.md)**
+**[← предыдущая: Структуры](09-structs.md) | [справочник →](appendix.md)**

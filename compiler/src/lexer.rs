@@ -140,11 +140,10 @@ impl<'a> Lexer<'a> {
                     self.advance();
                     Ok(TokenKind::DotDot)
                 } else {
-                    Err(Error::Lex {
-                        line,
-                        col,
-                        message: "unexpected single `.` (did you mean `..`?)".into(),
-                    })
+                    // Single `.` is field access (`p.x`). The lexer used to
+                    // reject it because nothing in the grammar consumed it;
+                    // structs need it now.
+                    Ok(TokenKind::Dot)
                 }
             }
             ';' => {
@@ -301,6 +300,7 @@ impl<'a> Lexer<'a> {
             "to_daqosh" => TokenKind::ToDaqosh,
             "push" => TokenKind::Push,
             "pop" => TokenKind::Pop,
+            "kep" => TokenKind::Kep,
             "baqderg" => TokenKind::Baqderg,
             "xarco" => TokenKind::Xarco,
             "a" => TokenKind::A,
@@ -584,7 +584,7 @@ mod tests {
             kinds(
                 "fnc xilit yuxadalo yazde esha khi cqachunna yallalc chu \
                  sac khida baram parse_terah parse_daqosh to_terah to_daqosh \
-                 push pop baqderg xarco a ya"
+                 push pop kep baqderg xarco a ya"
             ),
             vec![
                 TokenKind::Fnc,
@@ -605,6 +605,7 @@ mod tests {
                 TokenKind::ToDaqosh,
                 TokenKind::Push,
                 TokenKind::Pop,
+                TokenKind::Kep,
                 TokenKind::Baqderg,
                 TokenKind::Xarco,
                 TokenKind::A,
