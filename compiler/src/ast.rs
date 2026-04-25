@@ -1,4 +1,13 @@
-use crate::token::StringPart;
+/// Part of an interpolated string literal, as stored in the AST.
+///
+/// Distinct from `token::StringPart` because the lexer captures the raw
+/// source text inside `{...}` and the parser re-parses it into an `Expr`.
+/// Upstream: `StringPart::Literal("x = ")`, `StringPart::Interpolation(x)`.
+#[derive(Debug, Clone)]
+pub enum StringPart {
+    Literal(String),
+    Interpolation(Box<Expr>),
+}
 
 #[derive(Debug, Clone)]
 pub struct Program {

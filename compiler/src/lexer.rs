@@ -424,38 +424,65 @@ impl<'a> Lexer<'a> {
                     if !current.is_empty() {
                         parts.push(StringPart::Literal(std::mem::take(&mut current)));
                     }
-                    let id_line = self.line;
-                    let id_col = self.col;
-                    let id_start = self.pos;
-                    match self.peek() {
-                        Some(c) if c.is_ascii_alphabetic() || c == '_' => {
-                            self.advance();
-                        }
-                        _ => {
-                            return Err(Error::Lex {
-                                line: id_line,
-                                col: id_col,
-                                message: "expected identifier inside `{...}`".into(),
-                            });
+                    // Capture the raw expression source between `{` and the
+                    // matching `}`. The parser re-lexes + re-parses it into
+                    // an Expr. We support arbitrary expressions (math,
+                    // calls, comparisons) but disallow nested strings — a
+                    // `"` inside would clash with the outer literal's
+                    // terminator. If you need complex formatting, pre-
+                    // compute into a variable and interpolate that.
+                    let expr_line = self.line;
+                    let expr_col = self.col;
+                    let expr_start = self.pos;
+                    let mut depth: i32 = 0;
+                    loop {
+                        match self.peek() {
+                            None => {
+                                return Err(Error::Lex {
+                                    line: expr_line,
+                                    col: expr_col,
+                                    message: "unterminated interpolation — \
+                                              missing `}` (or string literal)"
+                                        .into(),
+                                });
+                            }
+                            Some('"') => {
+                                return Err(Error::Lex {
+                                    line: self.line,
+                                    col: self.col,
+                                    message: "string literals aren't allowed \
+                                              inside `{...}`; compute into a \
+                                              variable and interpolate that"
+                                        .into(),
+                                });
+                            }
+                            Some('{') => {
+                                depth += 1;
+                                self.advance();
+                            }
+                            Some('}') if depth == 0 => break,
+                            Some('}') => {
+                                depth -= 1;
+                                self.advance();
+                            }
+                            Some(_) => {
+                                self.advance();
+                            }
                         }
                     }
-                    while let Some(c) = self.peek() {
-                        if c.is_ascii_alphanumeric() || c == '_' {
-                            self.advance();
-                        } else {
-                            break;
-                        }
-                    }
-                    let ident = self.source[id_start..self.pos].to_string();
-                    if self.peek() != Some('}') {
+                    let src = self.source[expr_start..self.pos].to_string();
+                    // Reject empty interpolation — `{}` has no meaning.
+                    if src.trim().is_empty() {
                         return Err(Error::Lex {
-                            line: self.line,
-                            col: self.col,
-                            message: "expected `}` after identifier".into(),
+                            line: expr_line,
+                            col: expr_col,
+                            message: "empty interpolation `{}` — put an \
+                                      expression inside the braces"
+                                .into(),
                         });
                     }
-                    self.advance(); // consume '}'
-                    parts.push(StringPart::Interpolation(ident));
+                    self.advance(); // consume closing '}'
+                    parts.push(StringPart::Interpolation(src));
                 }
                 Some(c) => {
                     self.advance();

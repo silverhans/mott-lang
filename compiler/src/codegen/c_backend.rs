@@ -16,10 +16,11 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
-use crate::ast::{BinOp, Block, Expr, Function, Item, IterSource, Program, Stmt, Type, UnOp};
+use crate::ast::{
+    BinOp, Block, Expr, Function, Item, IterSource, Program, Stmt, StringPart, Type, UnOp,
+};
 use crate::codegen::Backend;
 use crate::error::{Error, Result};
-use crate::token::StringPart;
 
 pub struct CBackend;
 
@@ -1016,23 +1017,37 @@ impl Emitter {
                 StringPart::Literal(s) => {
                     self.write(&format!("MOTT_STR_LIT({})", c_string_literal(s)));
                 }
-                StringPart::Interpolation(id) => {
-                    let ty = self.lookup(id).ok_or_else(|| {
-                        Error::Codegen(format!(
-                            "undefined variable `{}` in string interpolation",
-                            id
-                        ))
-                    })?;
+                StringPart::Interpolation(expr) => {
+                    // General expressions now — not just identifiers. Infer
+                    // the type, then emit the expression wrapped in the
+                    // appropriate runtime converter.
+                    let ty = self.infer(expr)?;
                     match ty {
-                        Type::Deshnash => self.write(id),
-                        Type::Terah => self.write(&format!("mott_str_from_terah({})", id)),
-                        Type::Daqosh => self.write(&format!("mott_str_from_daqosh({})", id)),
-                        Type::Bool => self.write(&format!("mott_str_from_bool({})", id)),
+                        Type::Deshnash => {
+                            // Already a mott_str — emit as-is.
+                            self.emit_expr(expr)?;
+                        }
+                        Type::Terah => {
+                            self.write("mott_str_from_terah(");
+                            self.emit_expr(expr)?;
+                            self.write(")");
+                        }
+                        Type::Daqosh => {
+                            self.write("mott_str_from_daqosh(");
+                            self.emit_expr(expr)?;
+                            self.write(")");
+                        }
+                        Type::Bool => {
+                            self.write("mott_str_from_bool(");
+                            self.emit_expr(expr)?;
+                            self.write(")");
+                        }
                         Type::Array(_) => {
-                            return Err(Error::Codegen(format!(
-                                "cannot interpolate array `{}` into a string",
-                                id
-                            )));
+                            return Err(Error::Codegen(
+                                "cannot interpolate an array into a string — \
+                                 iterate and interpolate each element"
+                                    .into(),
+                            ));
                         }
                     }
                 }
@@ -1299,8 +1314,10 @@ mod tests {
     use crate::parser::Parser;
 
     fn compile(src: &str) -> Result<String> {
-        let tokens = Lexer::new(src).tokenize().expect("lex");
-        let program = Parser::new(tokens).parse().expect("parse");
+        // Propagate errors from any stage — used by both compile_ok and the
+        // error-case tests that need to see lex/parse rejections.
+        let tokens = Lexer::new(src).tokenize()?;
+        let program = Parser::new(tokens).parse()?;
         CBackend.emit(&program)
     }
 
@@ -1799,6 +1816,121 @@ fnc kort() {
     }
 
     #[test]
+    fn interpolation_with_arithmetic_expression() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit x: terah = 10
+    xilit y: terah = 3
+    yazde("diff: {x - y}")
+}
+"#,
+        );
+        // Subtraction expression passed to mott_str_from_terah.
+        assert!(c.contains("mott_str_from_terah("), "got:\n{}", c);
+        assert!(c.contains("(x - y)") || c.contains("(x  -  y)"), "got:\n{}", c);
+    }
+
+    #[test]
+    fn interpolation_with_function_call() {
+        let c = compile_ok(
+            r#"
+fnc sq(n: terah) -> terah {
+    yuxadalo n * n
+}
+fnc kort() {
+    xilit x: terah = 5
+    yazde("x^2 = {sq(x)}")
+}
+"#,
+        );
+        assert!(c.contains("mott_str_from_terah(sq("), "got:\n{}", c);
+    }
+
+    #[test]
+    fn interpolation_with_comparison_uses_bool_converter() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit x: terah = 5
+    xilit y: terah = 3
+    yazde("x > y? {x > y}")
+}
+"#,
+        );
+        assert!(c.contains("mott_str_from_bool("), "got:\n{}", c);
+    }
+
+    #[test]
+    fn interpolation_with_deshnash_expression_skips_converter() {
+        // A deshnash-valued expression — identity function on a variable
+        // — shouldn't wrap in mott_str_from_*, it's already a mott_str.
+        // (We can't pass a literal inline into `{...}` because the grammar
+        // forbids nested strings — hence the variable.)
+        let c = compile_ok(
+            r#"
+fnc identity(s: deshnash) -> deshnash {
+    yuxadalo s
+}
+fnc kort() {
+    xilit name: deshnash = "World"
+    yazde("hi, {identity(name)}!")
+}
+"#,
+        );
+        assert!(c.contains("identity("), "got:\n{}", c);
+        // No mott_str_from_* wrapping since identity() already returns mott_str.
+        assert!(!c.contains("mott_str_from_deshnash"), "got:\n{}", c);
+    }
+
+    #[test]
+    fn interpolation_with_undefined_var_errors() {
+        // Used to error in lexer; now it's a codegen/resolver error
+        // (the expression refers to an unknown identifier).
+        let err = compile(
+            r#"
+fnc kort() {
+    yazde("{bogus}")
+}
+"#,
+        )
+        .unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("undefined variable"), "got: {}", msg);
+    }
+
+    #[test]
+    fn empty_interpolation_rejected_at_lex() {
+        // `{}` with no expression is a lex error now — before we'd have
+        // errored with "expected identifier" when empty.
+        let err = compile(
+            r#"
+fnc kort() {
+    yazde("empty: {}")
+}
+"#,
+        )
+        .unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("empty interpolation"), "got: {}", msg);
+    }
+
+    #[test]
+    fn interpolation_with_nested_string_rejected() {
+        // To keep grammar simple: no nested strings inside `{...}`.
+        let err = compile(
+            r#"
+fnc kort() {
+    yazde("{"hello"}")
+}
+"#,
+        )
+        .unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("string literals aren't allowed"), "got: {}", msg);
+    }
+
+    #[test]
     fn uninit_terah_decl_zero_initializes() {
         let c = compile_ok(
             r#"
@@ -1852,6 +1984,7 @@ fnc kort() {
 "#,
         );
         assert!(c.contains("mott_arr_terah nums = mott_arr_terah_new(0, NULL);"), "got:\n{}", c);
+        // Also confirm push still works on the uninit-created array.
         assert!(c.contains("mott_arr_terah_push(&nums, "), "got:\n{}", c);
     }
 

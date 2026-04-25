@@ -148,7 +148,9 @@ xilit last: terah = pop(nums)          // shrink + return
 ### Строки
 
 ```mott
-xilit s: deshnash = "salam, {name}!"   // интерполяция — только идентификаторы
+xilit s: deshnash = "salam, {name}!"   // интерполяция — любые выражения
+xilit t: deshnash = "sum: {x + y}"     // работает
+// внутри {...} нельзя вложенные строки: "{f("x")}" — ошибка
 xilit eq = s == "hello"                // сравнение
 xilit n = baram(s)                     // длина в байтах
 ```

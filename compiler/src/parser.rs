@@ -1,8 +1,9 @@
 use crate::ast::{
-    BinOp, Block, Expr, Function, Item, IterSource, Param, Program, Stmt, Type, UnOp,
+    self, BinOp, Block, Expr, Function, Item, IterSource, Param, Program, Stmt, Type, UnOp,
 };
 use crate::error::{Error, Result};
-use crate::token::{Token, TokenKind};
+use crate::lexer::Lexer;
+use crate::token::{self, Token, TokenKind};
 
 pub struct Parser {
     tokens: Vec<Token>,
@@ -452,7 +453,14 @@ impl Parser {
             }
             TokenKind::String(parts) => {
                 self.advance();
-                Ok(Expr::String(parts))
+                // Convert lex-time parts (raw strings) to AST parts (with
+                // parsed Expr for interpolations). We re-lex + re-parse
+                // each interpolation substring here.
+                let ast_parts = parts
+                    .into_iter()
+                    .map(|p| self.lift_string_part(p))
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(Expr::String(ast_parts))
             }
             TokenKind::Ident(name) => {
                 self.advance();
@@ -588,6 +596,41 @@ impl Parser {
         }
     }
 
+    /// Convert a lex-time string part into an AST string part.
+    /// Literals pass through; interpolations get their captured source
+    /// re-lexed and re-parsed as a single expression.
+    fn lift_string_part(&self, p: token::StringPart) -> Result<ast::StringPart> {
+        match p {
+            token::StringPart::Literal(s) => Ok(ast::StringPart::Literal(s)),
+            token::StringPart::Interpolation(src) => {
+                // Re-lex + parse the captured source as a standalone
+                // expression. Errors bubble up with their own positions
+                // (relative to the interpolation source, not the outer
+                // file — good enough for now; we can plumb absolute
+                // positions later if it gets annoying).
+                let tokens = Lexer::new(&src).tokenize()?;
+                let mut sub = Parser::new(tokens);
+                let expr = sub.parse_expr()?;
+                // Must have consumed everything except a trailing
+                // synthesized `;` / EOF.
+                while sub.matches(&TokenKind::Semicolon) {}
+                if !sub.at_end() {
+                    let (line, col) = sub.peek_pos();
+                    return Err(Error::Parse {
+                        line,
+                        col,
+                        message: format!(
+                            "interpolation must be a single expression \
+                             (stray tokens after `{}`...)",
+                            src.trim()
+                        ),
+                    });
+                }
+                Ok(ast::StringPart::Interpolation(Box::new(expr)))
+            }
+        }
+    }
+
     // ---- types ----
 
     fn parse_type(&mut self) -> Result<Type> {
@@ -688,8 +731,8 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::StringPart;
     use crate::lexer::Lexer;
-    use crate::token::StringPart;
 
     fn parse_source(src: &str) -> Result<Program> {
         let tokens = Lexer::new(src).tokenize()?;
