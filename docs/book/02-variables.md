@@ -64,9 +64,44 @@ xilit x: terah = "not a number"
 
 ## Когда явный тип обязателен
 
-Сейчас — никогда (всегда справа есть значение). Но позже пригодится когда:
-- Хочешь `daqosh` для целого числа: `xilit y: daqosh = 5` не сработает (справа `5` это `terah`). Придётся писать `xilit y: daqosh = 5.0`.
-- В коде появится что-то с неоднозначным типом (но таких конструкций в MVP нет).
+- **Когда нет значения** (см. ниже). `xilit x: terah` — ок, `xilit x` — ошибка.
+- **Хочешь `daqosh` для целого числа**: `xilit y: daqosh = 5` не сработает (справа `5` это `terah`). Придётся `xilit y: daqosh = 5.0` или `xilit y: daqosh = to_daqosh(5)`.
+- **Пустой массив**: `xilit nums: [terah] = []` — без аннотации компилятору неоткуда вывести тип элемента.
+
+## Объявление без значения
+
+Можно объявить переменную, не присваивая ей ничего сразу — если указан тип:
+
+```mott
+fnc kort() {
+    xilit x: terah
+    xilit s: deshnash
+    xilit flag: bool
+    xilit nums: [terah]
+
+    yazde(x)          // 0
+    yazde(s)          // пустая строка
+    yazde(flag)       // xarco
+
+    x = 42
+    yazde(x)          // 42
+}
+```
+
+Каждый тип имеет своё **zero-value**:
+- `terah` → `0`
+- `daqosh` → `0.0`
+- `bool` → `xarco`
+- `deshnash` → `""` (пустая)
+- массив `[T]` → пустой массив длины 0
+
+Без типа (`xilit x`) — ошибка компиляции. Компилятор не умеет угадывать тип из воздуха:
+
+```mott
+xilit x
+// error: variable `x` needs either a type annotation
+// (`xilit x: terah`) or an initializer (`xilit x = 0`)
+```
 
 ## Присваивание
 

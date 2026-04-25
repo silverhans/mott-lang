@@ -21,6 +21,13 @@ fn is_stmt_end(k: &TokenKind) -> bool {
             | TokenKind::Sac
             | TokenKind::Khida
             | TokenKind::Yuxadalo
+            // Type keywords can end a statement now that `xilit x: T` is a
+            // valid uninit declaration. Types never appear mid-expression,
+            // so this is unambiguous.
+            | TokenKind::Terah
+            | TokenKind::Bool
+            | TokenKind::Deshnash
+            | TokenKind::Daqosh
     )
 }
 
@@ -601,6 +608,8 @@ mod tests {
 
     #[test]
     fn type_keywords() {
+        // Trailing Semicolon because type keywords now terminate a
+        // statement (to support `xilit x: terah` without init).
         assert_eq!(
             kinds("terah bool deshnash daqosh"),
             vec![
@@ -608,6 +617,7 @@ mod tests {
                 TokenKind::Bool,
                 TokenKind::Deshnash,
                 TokenKind::Daqosh,
+                TokenKind::Semicolon,
                 TokenKind::Eof,
             ]
         );

@@ -173,14 +173,33 @@ impl Parser {
 
     fn parse_let(&mut self) -> Result<Stmt> {
         self.expect(&TokenKind::Xilit, "expected `xilit`")?;
+        let (name_line, name_col) = self.peek_pos();
         let name = self.expect_ident("expected variable name after `xilit`")?;
         let ty = if self.matches(&TokenKind::Colon) {
             Some(self.parse_type()?)
         } else {
             None
         };
-        self.expect(&TokenKind::Assign, "expected `=` in variable declaration")?;
-        let value = self.parse_expr()?;
+        // Three shapes: `xilit x = e`, `xilit x: T = e`, `xilit x: T`.
+        // Without a type annotation, we need an initializer to infer the
+        // type — so the fourth shape (`xilit x`) is rejected here with a
+        // targeted error.
+        let value = if self.matches(&TokenKind::Assign) {
+            Some(self.parse_expr()?)
+        } else if ty.is_some() {
+            None
+        } else {
+            return Err(Error::Parse {
+                line: name_line,
+                col: name_col,
+                message: format!(
+                    "variable `{}` needs either a type annotation \
+                     (`xilit {}: terah`) or an initializer (`xilit {} = 0`) — \
+                     the compiler can't guess the type from nothing",
+                    name, name, name
+                ),
+            });
+        };
         self.expect(&TokenKind::Semicolon, "expected `;` after declaration")?;
         Ok(Stmt::Let { name, ty, value })
     }
@@ -712,6 +731,33 @@ mod tests {
     }
 
     #[test]
+    fn let_with_type_but_no_init_parses() {
+        // `xilit x: terah` — declaration without initializer.
+        // Codegen zero-inits; parser just stores None. The trailing newline
+        // matters: the lexer synthesizes `;` from it (type keywords are
+        // stmt-enders).
+        let p = parse_ok("fnc kort() {\n    xilit x: terah\n}\n");
+        let f = only_function(&p);
+        match &f.body.stmts[0] {
+            Stmt::Let { name, ty, value } => {
+                assert_eq!(name, "x");
+                assert_eq!(*ty, Some(Type::Terah));
+                assert!(value.is_none());
+            }
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn let_with_neither_type_nor_init_errors() {
+        // `xilit x` — nothing to infer from; give a targeted error.
+        let err = parse_source("fnc kort() {\n    xilit x\n}\n").unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("type annotation"), "got: {}", msg);
+        assert!(msg.contains("initializer"), "got: {}", msg);
+    }
+
+    #[test]
     fn reserved_word_a_cannot_be_identifier() {
         // `a` is the AND operator, so it can't be a variable/parameter name.
         let err = parse_source("fnc kort() { xilit a = 5; }").unwrap_err();
@@ -726,7 +772,7 @@ mod tests {
             Stmt::Let { name, ty, value } => {
                 assert_eq!(name, "x");
                 assert!(ty.is_none());
-                assert!(matches!(value, Expr::Integer(5)));
+                assert!(matches!(value, Some(Expr::Integer(5))));
             }
             other => panic!("expected Let, got {:?}", other),
         }
@@ -756,7 +802,7 @@ mod tests {
         let f = only_function(&p);
         // Should be: Add(1, Mul(2, 3))
         if let Stmt::Let {
-            value: Expr::Binary { op, left, right },
+            value: Some(Expr::Binary { op, left, right }),
             ..
         } = &f.body.stmts[0]
         {
@@ -948,14 +994,14 @@ mod tests {
         assert!(matches!(
             &f.body.stmts[0],
             Stmt::Let {
-                value: Expr::Unary { op: UnOp::Neg, .. },
+                value: Some(Expr::Unary { op: UnOp::Neg, .. }),
                 ..
             }
         ));
         assert!(matches!(
             &f.body.stmts[1],
             Stmt::Let {
-                value: Expr::Unary { op: UnOp::Not, .. },
+                value: Some(Expr::Unary { op: UnOp::Not, .. }),
                 ..
             }
         ));
@@ -980,7 +1026,7 @@ mod tests {
         let Stmt::Let { value, .. } = &f.body.stmts[0] else {
             panic!("expected let");
         };
-        assert!(matches!(value, Expr::Input));
+        assert!(matches!(value, Some(Expr::Input)));
     }
 
     #[test]
@@ -997,11 +1043,11 @@ mod tests {
         let f = only_function(&p);
         if let Stmt::Let {
             value:
-                Expr::Binary {
+                Some(Expr::Binary {
                     op: BinOp::Mul,
                     left,
                     ..
-                },
+                }),
             ..
         } = &f.body.stmts[0]
         {
@@ -1149,7 +1195,7 @@ mod tests {
             panic!("expected Let");
         };
         assert_eq!(ty, &Some(Type::Array(Box::new(Type::Terah))));
-        assert!(matches!(value, Expr::ArrayLit(elems) if elems.len() == 3));
+        assert!(matches!(value, Some(Expr::ArrayLit(elems)) if elems.len() == 3));
     }
 
     #[test]
@@ -1164,7 +1210,7 @@ mod tests {
         let Stmt::Let { value, .. } = &f.body.stmts[1] else {
             panic!("expected Let");
         };
-        assert!(matches!(value, Expr::Index { .. }));
+        assert!(matches!(value, Some(Expr::Index { .. })));
     }
 
     #[test]
@@ -1224,7 +1270,7 @@ mod tests {
         let Stmt::Let { value, .. } = &f.body.stmts[0] else {
             panic!("expected Let");
         };
-        assert!(matches!(value, Expr::ParseTerah(_)));
+        assert!(matches!(value, Some(Expr::ParseTerah(_))));
     }
 
     #[test]
@@ -1238,7 +1284,7 @@ mod tests {
         let Stmt::Let { value, .. } = &f.body.stmts[0] else {
             panic!("expected Let");
         };
-        assert!(matches!(value, Expr::ParseDaqosh(_)));
+        assert!(matches!(value, Some(Expr::ParseDaqosh(_))));
     }
 
     #[test]
@@ -1260,7 +1306,7 @@ mod tests {
         let Stmt::Let { value, .. } = &f.body.stmts[0] else {
             panic!("expected Let");
         };
-        assert!(matches!(value, Expr::ToTerah(_)));
+        assert!(matches!(value, Some(Expr::ToTerah(_))));
     }
 
     #[test]
@@ -1306,7 +1352,7 @@ mod tests {
         let Stmt::Let { value, .. } = &f.body.stmts[1] else {
             panic!("expected Let");
         };
-        assert!(matches!(value, Expr::Pop(n) if n == "nums"));
+        assert!(matches!(value, Some(Expr::Pop(n)) if n == "nums"));
     }
 
     #[test]
@@ -1322,7 +1368,7 @@ mod tests {
         let Stmt::Let { value, .. } = &f.body.stmts[0] else {
             panic!("expected Let");
         };
-        assert!(matches!(value, Expr::ArrayLit(elems) if elems.is_empty()));
+        assert!(matches!(value, Some(Expr::ArrayLit(elems)) if elems.is_empty()));
     }
 
     #[test]
@@ -1336,7 +1382,7 @@ mod tests {
         let Stmt::Let { value, .. } = &f.body.stmts[0] else {
             panic!("expected Let");
         };
-        assert!(matches!(value, Expr::ToDaqosh(_)));
+        assert!(matches!(value, Some(Expr::ToDaqosh(_))));
     }
 
     #[test]
@@ -1351,6 +1397,6 @@ mod tests {
         let Stmt::Let { value, .. } = &f.body.stmts[1] else {
             panic!("expected Let");
         };
-        assert!(matches!(value, Expr::Baram(_)));
+        assert!(matches!(value, Some(Expr::Baram(_))));
     }
 }

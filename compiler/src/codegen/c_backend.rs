@@ -372,9 +372,14 @@ impl Emitter {
         match s {
             Stmt::Let { name, ty, value } => {
                 self.write_indent();
-                let actual_ty = match ty {
-                    Some(t) => t.clone(),
-                    None => self.infer(value)?,
+                // If no initializer, we must have a type (parser enforces
+                // this). Zero-initialize per type.
+                let actual_ty = match (ty, value) {
+                    (Some(t), _) => t.clone(),
+                    (None, Some(v)) => self.infer(v)?,
+                    (None, None) => unreachable!(
+                        "parser should reject `xilit` without type or init"
+                    ),
                 };
                 if self.scopes.last().unwrap().contains_key(name) {
                     return Err(Error::Codegen(format!(
@@ -383,30 +388,33 @@ impl Emitter {
                     )));
                 }
                 self.write(&format!("{} {} = ", type_to_c(&actual_ty), name));
-                // Empty array literal `[]` can only be typed from the
-                // annotation — infer() / emit_expr() alone would fail on
-                // element-type inference. Handle it here so it Just Works
-                // in the natural `xilit nums: [terah] = []` case.
-                let val_ty = if let (Expr::ArrayLit(elems), Type::Array(elem_ty)) =
-                    (value, &actual_ty)
-                {
-                    if elems.is_empty() {
+                match value {
+                    // No initializer — emit the zero value for the type.
+                    None => self.write(&zero_value(&actual_ty)),
+                    // Empty array literal `[]` needs the type from
+                    // annotation — infer() / emit_expr() alone couldn't
+                    // recover the element type. Handled here so the
+                    // natural `xilit nums: [T] = []` Just Works.
+                    Some(Expr::ArrayLit(elems))
+                        if elems.is_empty() && matches!(actual_ty, Type::Array(_)) =>
+                    {
+                        let Type::Array(elem_ty) = &actual_ty else {
+                            unreachable!()
+                        };
                         let ctor = array_ctor_name(elem_ty);
                         self.write(&format!("{}(0, NULL)", ctor));
-                        actual_ty.clone()
-                    } else {
-                        self.emit_expr(value)?
                     }
-                } else {
-                    self.emit_expr(value)?
-                };
-                if ty.is_some() && val_ty != actual_ty {
-                    return Err(Error::Codegen(format!(
-                        "type mismatch: `{}` declared as {} but initializer is {}",
-                        name,
-                        type_name(&actual_ty),
-                        type_name(&val_ty)
-                    )));
+                    Some(v) => {
+                        let val_ty = self.emit_expr(v)?;
+                        if ty.is_some() && val_ty != actual_ty {
+                            return Err(Error::Codegen(format!(
+                                "type mismatch: `{}` declared as {} but initializer is {}",
+                                name,
+                                type_name(&actual_ty),
+                                type_name(&val_ty)
+                            )));
+                        }
+                    }
                 }
                 self.writeln(";");
                 self.declare(name, actual_ty);
@@ -1206,6 +1214,23 @@ fn array_ctor_name(t: &Type) -> &'static str {
     }
 }
 
+/// Zero-value C expression for a mott type. Used to initialize typed `xilit`
+/// declarations that omit an initializer.
+fn zero_value(t: &Type) -> String {
+    match t {
+        Type::Terah => "((int64_t)0)".into(),
+        Type::Daqosh => "0.0".into(),
+        Type::Bool => "false".into(),
+        Type::Deshnash => "MOTT_STR_LIT(\"\")".into(),
+        // For arrays: empty of the right element type. Same shape as the
+        // `[]` literal path — we just synthesize the constructor call.
+        Type::Array(inner) => {
+            let ctor = array_ctor_name(inner);
+            format!("{}(0, NULL)", ctor)
+        }
+    }
+}
+
 fn array_push_name(t: &Type) -> &'static str {
     match t {
         Type::Terah => "mott_arr_terah_push",
@@ -1771,6 +1796,79 @@ fnc kort() {
         .unwrap_err();
         let msg = format!("{}", err);
         assert!(msg.contains("numeric"), "got: {}", msg);
+    }
+
+    #[test]
+    fn uninit_terah_decl_zero_initializes() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit x: terah
+    yazde(x)
+}
+"#,
+        );
+        assert!(c.contains("int64_t x = ((int64_t)0);"), "got:\n{}", c);
+    }
+
+    #[test]
+    fn uninit_deshnash_decl_emits_empty_string() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit s: deshnash
+    yazde(s)
+}
+"#,
+        );
+        assert!(
+            c.contains(r#"mott_str s = MOTT_STR_LIT("");"#),
+            "got:\n{}",
+            c
+        );
+    }
+
+    #[test]
+    fn uninit_bool_decl_false() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit flag: bool
+    yazde(flag)
+}
+"#,
+        );
+        assert!(c.contains("bool flag = false;"), "got:\n{}", c);
+    }
+
+    #[test]
+    fn uninit_array_decl_zero_len_constructor() {
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit nums: [terah]
+    push(nums, 42)
+}
+"#,
+        );
+        assert!(c.contains("mott_arr_terah nums = mott_arr_terah_new(0, NULL);"), "got:\n{}", c);
+        assert!(c.contains("mott_arr_terah_push(&nums, "), "got:\n{}", c);
+    }
+
+    #[test]
+    fn uninit_followed_by_assign_works() {
+        // The user's bug report: declare uninit, assign later, read later.
+        let c = compile_ok(
+            r#"
+fnc kort() {
+    xilit x: terah
+    x = 100
+    yazde(x)
+}
+"#,
+        );
+        assert!(c.contains("int64_t x = ((int64_t)0);"), "got:\n{}", c);
+        assert!(c.contains("x = ((int64_t)100LL);"), "got:\n{}", c);
     }
 
     #[test]

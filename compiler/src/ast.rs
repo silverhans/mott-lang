@@ -40,10 +40,14 @@ pub struct Block {
 
 #[derive(Debug, Clone)]
 pub enum Stmt {
+    /// `xilit x = 5` — init provided, type inferred or annotated.
+    /// `xilit x: T` — type-annotated, no init. Codegen zero-initializes
+    /// based on T. A Let with both `ty == None` and `value == None` is
+    /// a parse error (no type to infer from).
     Let {
         name: String,
         ty: Option<Type>,
-        value: Expr,
+        value: Option<Expr>,
     },
     Assign {
         name: String,
