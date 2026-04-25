@@ -14,6 +14,7 @@ use std::process::{exit, Command};
 use mott::codegen::{c_backend::CBackend, Backend};
 use mott::lexer::Lexer;
 use mott::parser::Parser;
+use mott::sema;
 
 struct Args {
     source: PathBuf,
@@ -97,6 +98,12 @@ fn main() {
     });
 
     let program = Parser::new(tokens).parse().unwrap_or_else(|e| {
+        die(&format!("in {}: {}", args.source.display(), e));
+    });
+
+    // Sema runs before codegen. All type errors and language-rule
+    // violations surface here; codegen can assume a well-formed AST.
+    sema::check(&program).unwrap_or_else(|e| {
         die(&format!("in {}: {}", args.source.display(), e));
     });
 
