@@ -3,11 +3,11 @@ fnc kort() {
     cqachunna i <= 100 {
         nagah sanna i % 3 == 0 a, i % 5 == 0 a {
             yazde("FizzBuzz")
-        } khi nagah sanna i % 3 == 0 {
+        } vusht nagah sanna i % 3 == 0 {
             yazde("Fizz")
-        } khi nagah sanna i % 5 == 0 {
+        } vusht nagah sanna i % 5 == 0 {
             yazde("Buzz")
-        } khi {
+        } vusht {
             yazde("{i}")
         }
         i = i + 1

@@ -287,7 +287,7 @@ impl<'a> Lexer<'a> {
             "yuxadalo" => TokenKind::Yuxadalo,
             "yazde" => TokenKind::Yazde,
             "esha" => TokenKind::Esha,
-            "khi" => TokenKind::Khi,
+            "vusht" => TokenKind::Vusht,
             "cqachunna" => TokenKind::Cqachunna,
             "yallalc" => TokenKind::Yallalc,
             "chu" => TokenKind::Chu,
@@ -583,7 +583,7 @@ mod tests {
     fn single_keywords() {
         assert_eq!(
             kinds(
-                "fnc xilit yuxadalo yazde esha khi cqachunna yallalc chu \
+                "fnc xilit yuxadalo yazde esha vusht cqachunna yallalc chu \
                  sac khida baram parse_terah parse_daqosh to_terah to_daqosh \
                  push pop kep eca baqderg xarco a ya"
             ),
@@ -593,7 +593,7 @@ mod tests {
                 TokenKind::Yuxadalo,
                 TokenKind::Yazde,
                 TokenKind::Esha,
-                TokenKind::Khi,
+                TokenKind::Vusht,
                 TokenKind::Cqachunna,
                 TokenKind::Yallalc,
                 TokenKind::Chu,

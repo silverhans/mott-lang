@@ -23,7 +23,7 @@
 | 1 | [Hello, World](01-hello-world.md) | Установка, первая программа, `yazde`, `fnc kort` |
 | 2 | [Переменные и типы](02-variables.md) | `xilit`, четыре примитива, вывод типов, присваивание |
 | 3 | [Выражения и операторы](03-expressions.md) | Арифметика, сравнения, AND (`a`), OR (`ya`), приоритеты |
-| 4 | [Управление потоком](04-control-flow.md) | `nagah sanna`, `khi`, цепочки `khi nagah sanna`, `cqachunna`, `sac`, `khida` |
+| 4 | [Управление потоком](04-control-flow.md) | `nagah sanna`, `vusht`, цепочки `vusht nagah sanna`, `cqachunna`, `sac`, `khida` |
 | 5 | [Функции](05-functions.md) | `fnc`, параметры, возврат, рекурсия, void-функции |
 | 6 | [Строки](06-strings.md) | `deshnash`, escape-последовательности, интерполяция `{x}`, сравнение, `baram` |
 | 7 | [Ввод и вывод](07-input-output.md) | `yazde` для всех типов, `esha` для stdin, интерактивные программы |

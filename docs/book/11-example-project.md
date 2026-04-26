@@ -292,7 +292,7 @@ mott stats.mott -o stats && ./stats
 - **Массивы `[terah]`** — литерал, индексация, мутация недлины
 - **`baram(...)`** — длина
 - **`yallalc ... chu ...`** — по массиву и по range
-- **`nagah sanna` / `khi`** — условия
+- **`nagah sanna` / `vusht`** — условия
 - **`cqachunna`** — while (в `is_prime`)
 - **`yuxadalo`** — возврат, в том числе ранний
 - **Интерполяция строк** — в `yazde("{x}")`

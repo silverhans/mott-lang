@@ -12,7 +12,7 @@
 | `yazde` | язде | встроенный вывод |
 | `esha` | эша | встроенный ввод строки |
 | `nagah sanna` | нагахь санна | `if` (двусловная пара) |
-| `khi` | кхи | `else` |
+| `vusht` | вуьшт | `else` (другое) |
 | `cqachunna` | цкъачунна | `while` |
 | `yallalc` | яллалц | `for` |
 | `chu` | чу | `in` (связка в for-each) |
@@ -48,7 +48,7 @@
 
 ```
 fnc xilit yuxadalo yazde esha
-nagah sanna khi cqachunna yallalc chu
+nagah sanna vusht cqachunna yallalc chu
 sac khida baram parse_terah parse_daqosh to_terah to_daqosh
 push pop kep eca baqderg xarco a ya
 terah bool deshnash daqosh
@@ -105,9 +105,9 @@ y = y + 1                              // присваивание
 ```mott
 nagah sanna cond {
     // ...
-} khi nagah sanna other {
+} vusht nagah sanna other {
     // ...
-} khi {
+} vusht {
     // ...
 }
 ```

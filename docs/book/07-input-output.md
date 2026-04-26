@@ -170,7 +170,7 @@ fnc kort() {
 
     nagah sanna answer == "y" ya answer == "yes" {
         yazde("OK, поехали")
-    } khi {
+    } vusht {
         yazde("отмена")
     }
 }

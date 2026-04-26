@@ -349,18 +349,18 @@ impl Parser {
         let then_block = self.parse_block()?;
 
         // The lexer synthesizes `;` on newlines after `}`. Skip it so that
-        // `} khi {` on separate lines still joins as a single if/else.
+        // `} vusht {` on separate lines still joins as a single if/else.
         // This is the mott equivalent of Go forbidding `}\nelse`: we just
         // don't force the user to put it on the same line.
         while self.matches(&TokenKind::Semicolon) {}
 
-        // `khi` may be followed by either `{...}` (classic else) or
+        // `vusht` may be followed by either `{...}` (classic else) or
         // `nagah sanna (...) {...}` (else-if sugar). In the sugar case we
         // desugar into a nested `If` wrapped in a single-stmt Block so the
         // rest of the pipeline (typecheck, codegen) doesn't need to know
         // about chains at all. The C backend then re-detects this pattern
         // to emit idiomatic `else if`.
-        let else_block = if self.matches(&TokenKind::Khi) {
+        let else_block = if self.matches(&TokenKind::Vusht) {
             if self.check(&TokenKind::NagahSanna) {
                 let nested_if = self.parse_if()?;
                 Some(Block {
@@ -1342,7 +1342,7 @@ fnc kort() {
             r#"fnc kort() {
                 nagah sanna (x < 5) {
                     yazde("small");
-                } khi {
+                } vusht {
                     yazde("big");
                 }
             }"#,
@@ -1389,15 +1389,15 @@ fnc kort() {
     }
 
     #[test]
-    fn khi_nagah_sanna_chain_desugars_to_nested_if() {
+    fn vusht_nagah_sanna_chain_desugars_to_nested_if() {
         let p = parse_ok(
             r#"fnc kort() {
                 xilit x: terah = 1;
                 nagah sanna (x == 1) {
                     yazde("one");
-                } khi nagah sanna (x == 2) {
+                } vusht nagah sanna (x == 2) {
                     yazde("two");
-                } khi {
+                } vusht {
                     yazde("other");
                 }
             }"#,
@@ -1422,14 +1422,14 @@ fnc kort() {
     }
 
     #[test]
-    fn khi_nagah_sanna_without_final_else_is_ok() {
-        // Chain without a terminal `khi { ... }` should still parse.
+    fn vusht_nagah_sanna_without_final_else_is_ok() {
+        // Chain without a terminal `vusht { ... }` should still parse.
         let p = parse_ok(
             r#"fnc kort() {
                 xilit x: terah = 1;
                 nagah sanna (x == 1) {
                     yazde("one");
-                } khi nagah sanna (x == 2) {
+                } vusht nagah sanna (x == 2) {
                     yazde("two");
                 }
             }"#,
@@ -1636,7 +1636,7 @@ fnc kort() {
                  cqachunna x < 10 {\n        \
                      nagah sanna x == 7 {\n            \
                          yazde(\"seven\")\n        \
-                     } khi {\n            \
+                     } vusht {\n            \
                          yazde(\"{x}\")\n        \
                      }\n        \
                      x = x + 1\n    \
@@ -1650,18 +1650,18 @@ fnc kort() {
 
     #[test]
     fn else_chain_across_newlines() {
-        // `}` on one line, `khi nagah sanna` on the next — must still parse
-        // as an else-if chain (lexer's synthetic `;` gets skipped before khi).
+        // `}` on one line, `vusht nagah sanna` on the next — must still parse
+        // as an else-if chain (lexer's synthetic `;` gets skipped before vusht).
         let p = parse_ok(
             "fnc kort() {\n    \
                  xilit x: terah = 1\n    \
                  nagah sanna x == 1 {\n        \
                      yazde(\"one\")\n    \
                  }\n    \
-                 khi nagah sanna x == 2 {\n        \
+                 vusht nagah sanna x == 2 {\n        \
                      yazde(\"two\")\n    \
                  }\n    \
-                 khi {\n        \
+                 vusht {\n        \
                      yazde(\"other\")\n    \
                  }\n\
              }\n",

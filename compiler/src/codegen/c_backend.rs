@@ -382,7 +382,7 @@ impl Emitter {
     }
 
     /// Emit `if (cond) {...} [else ...]`, collapsing parser-desugared
-    /// `khi nagah sanna` chains back into idiomatic C `else if`.
+    /// `vusht nagah sanna` chains back into idiomatic C `else if`.
     fn emit_if_chain(&mut self, cond: &Expr, then_block: &Block, else_block: Option<&Block>) {
         self.write("if (");
         self.emit_expr(cond);
@@ -1112,7 +1112,7 @@ fn collect_struct_array_uses(program: &Program) -> Vec<String> {
 }
 
 /// If `b` is a single-stmt block containing only an `If`, return its pieces.
-/// This is the shape the parser produces for `khi nagah sanna` — letting
+/// This is the shape the parser produces for `vusht nagah sanna` — letting
 /// the backend re-emit `else if` instead of `else { if ... }`.
 fn as_chained_if(b: &Block) -> Option<(&Expr, &Block, Option<&Block>)> {
     if b.stmts.len() != 1 {
@@ -1299,7 +1299,7 @@ fnc kort() {
     cqachunna (i < 3) {
         nagah sanna (i == 1) {
             yazde("one");
-        } khi {
+        } vusht {
             yazde("other");
         }
         i = i + 1;
@@ -1320,11 +1320,11 @@ fnc kort() {
     xilit x: terah = 1;
     nagah sanna (x == 1) {
         yazde("one");
-    } khi nagah sanna (x == 2) {
+    } vusht nagah sanna (x == 2) {
         yazde("two");
-    } khi nagah sanna (x == 3) {
+    } vusht nagah sanna (x == 3) {
         yazde("three");
-    } khi {
+    } vusht {
         yazde("other");
     }
 }

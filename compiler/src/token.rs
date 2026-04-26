@@ -13,7 +13,7 @@ pub enum TokenKind {
     Yazde,
     Esha,
     NagahSanna,
-    Khi,
+    Vusht,
     Cqachunna,
     Yallalc,
     Chu,
