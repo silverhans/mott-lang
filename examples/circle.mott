@@ -1,0 +1,22 @@
+// Площадь и длина окружности по радиусу.
+// Демонстрирует импорт стандартной библиотеки `math`.
+
+eca math
+
+fnc area(r: daqosh) -> daqosh {
+    yuxadalo math.pi() * r * r
+}
+
+fnc circumference(r: daqosh) -> daqosh {
+    yuxadalo 2.0 * math.pi() * r
+}
+
+fnc kort() {
+    xilit r: daqosh = 5.0
+    yazde("Радиус: {r}")
+    yazde("Площадь: {area(r)}")
+    yazde("Длина окружности: {circumference(r)}")
+    yazde("")
+    xilit diag: daqosh = math.sqrt(2.0)
+    yazde("Диагональ единичного квадрата: {diag}")
+}

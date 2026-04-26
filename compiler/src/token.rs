@@ -27,6 +27,7 @@ pub enum TokenKind {
     Push,
     Pop,
     Kep,
+    Eca,
     Baqderg,
     Xarco,
     A,

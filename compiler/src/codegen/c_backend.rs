@@ -67,8 +67,12 @@ impl Emitter {
         for item in &program.items {
             match item {
                 Item::Function(f) => {
+                    let key = match &f.module {
+                        Some(m) => format!("{}.{}", m, f.name),
+                        None => f.name.clone(),
+                    };
                     functions.insert(
-                        f.name.clone(),
+                        key,
                         FuncSig {
                             return_type: f.return_type.clone(),
                         },
@@ -77,6 +81,10 @@ impl Emitter {
                 Item::Struct(s) => {
                     structs.insert(s.name.clone(), s.clone());
                 }
+                // Imports were resolved by the loader; if any survive
+                // here it's because of a unit test that bypassed loading
+                // — skip them.
+                Item::Import { .. } => {}
             }
         }
         Self {
@@ -114,7 +122,9 @@ impl Emitter {
             self.writeln("");
         }
 
-        // Forward-declare every non-entry function so call-before-define works.
+        // Forward-declare every non-entry function so call-before-define
+        // works. Extern functions (no body) get only the forward decl;
+        // they're implemented in the runtime / module C files.
         let mut has_decls = false;
         for item in &program.items {
             if let Item::Function(f) = item {
@@ -132,8 +142,10 @@ impl Emitter {
 
         for item in &program.items {
             if let Item::Function(f) = item {
-                self.emit_function(f);
-                self.writeln("");
+                if f.body.is_some() {
+                    self.emit_function(f);
+                    self.writeln("");
+                }
             }
         }
     }
@@ -227,7 +239,8 @@ impl Emitter {
             Some(t) => type_to_c(t),
             None => "void".into(),
         };
-        self.write(&format!("{} {}(", ret, f.name));
+        let name = c_func_name(&f.module, &f.name);
+        self.write(&format!("{} {}(", ret, name));
         if f.params.is_empty() {
             self.write("void");
         } else {
@@ -242,6 +255,12 @@ impl Emitter {
     }
 
     fn emit_function(&mut self, f: &Function) {
+        // Extern functions: nothing to emit here. Their forward declaration
+        // lives in the prelude (see `emit_program`).
+        let body = match &f.body {
+            Some(b) => b,
+            None => return,
+        };
         if f.name == "kort" {
             // Sema has already verified `kort` takes no params and has no
             // return type — we just emit `int main(void)` here.
@@ -255,7 +274,7 @@ impl Emitter {
         for p in &f.params {
             self.declare(&p.name, p.ty.clone());
         }
-        for s in &f.body.stmts {
+        for s in &body.stmts {
             self.emit_stmt(s);
         }
         if f.name == "kort" {
@@ -347,8 +366,11 @@ impl Emitter {
     }
 
     /// Emit `callee(arg1, ...)`. Sema validated arity + types already.
-    fn emit_call(&mut self, callee: &str, args: &[Expr]) {
-        self.write(callee);
+    /// Module-qualified calls get the `mott_<module>_<name>` mangling so
+    /// they don't collide with libc symbols.
+    fn emit_call(&mut self, module: &Option<String>, callee: &str, args: &[Expr]) {
+        let name = c_func_name(module, callee);
+        self.write(&name);
         self.write("(");
         for (i, arg) in args.iter().enumerate() {
             if i > 0 {
@@ -492,10 +514,19 @@ impl Emitter {
                 // Void calls are valid as bare statements but the value
                 // path of emit_expr would try to use the result. Detect
                 // and route around.
-                if let Expr::Call { callee, args } = e {
-                    if let Some(sig) = self.functions.get(callee) {
+                if let Expr::Call {
+                    module,
+                    callee,
+                    args,
+                } = e
+                {
+                    let key = match module {
+                        Some(m) => format!("{}.{}", m, callee),
+                        None => callee.clone(),
+                    };
+                    if let Some(sig) = self.functions.get(&key) {
                         if sig.return_type.is_none() {
-                            self.emit_call(callee, args);
+                            self.emit_call(module, callee, args);
                             self.writeln(";");
                             return;
                         }
@@ -613,8 +644,12 @@ impl Emitter {
                 }
                 self.write(")");
             }
-            Expr::Call { callee, args } => {
-                self.emit_call(callee, args);
+            Expr::Call {
+                module,
+                callee,
+                args,
+            } => {
+                self.emit_call(module, callee, args);
             }
             Expr::Input => {
                 self.write("mott_input()");
@@ -797,11 +832,18 @@ impl Emitter {
                 UnOp::Neg => self.type_of(expr),
             },
             Expr::LogicAnd(_) | Expr::LogicOr(_) => Type::Bool,
-            Expr::Call { callee, .. } => self
-                .functions
-                .get(callee)
-                .and_then(|s| s.return_type.clone())
-                .unwrap_or_else(|| unreachable!("sema ensures call returns a value")),
+            Expr::Call {
+                module, callee, ..
+            } => {
+                let key = match module {
+                    Some(m) => format!("{}.{}", m, callee),
+                    None => callee.clone(),
+                };
+                self.functions
+                    .get(&key)
+                    .and_then(|s| s.return_type.clone())
+                    .unwrap_or_else(|| unreachable!("sema ensures call returns a value"))
+            }
             Expr::Input => Type::Deshnash,
             Expr::ArrayLit(elems) => {
                 let inner = self.type_of(&elems[0]);
@@ -872,6 +914,18 @@ impl Emitter {
         for _ in 0..self.indent {
             self.out.push_str("    ");
         }
+    }
+}
+
+/// Mangled C name for a (possibly module-qualified) Mott function.
+/// User-level functions emit as-is so `kort` becomes `int main(void)`
+/// and `add(2, 3)` stays `add(2, 3)`. Module functions get a
+/// `mott_<module>_` prefix to avoid clashing with libc symbols
+/// (`sqrt`, `pow`, `sin` would collide otherwise).
+fn c_func_name(module: &Option<String>, name: &str) -> String {
+    match module {
+        Some(m) => format!("mott_{}_{}", m, name),
+        None => name.to_string(),
     }
 }
 
@@ -1038,8 +1092,10 @@ fn collect_struct_array_uses(program: &Program) -> Vec<String> {
                 if let Some(rt) = &f.return_type {
                     walk_type(rt, &mut set);
                 }
-                for s in &f.body.stmts {
-                    walk_stmt(s, &mut set);
+                if let Some(body) = &f.body {
+                    for s in &body.stmts {
+                        walk_stmt(s, &mut set);
+                    }
                 }
             }
             Item::Struct(s) => {
@@ -1047,6 +1103,7 @@ fn collect_struct_array_uses(program: &Program) -> Vec<String> {
                     walk_type(&f.ty, &mut set);
                 }
             }
+            Item::Import { .. } => {}
         }
     }
     let mut v: Vec<String> = set.into_iter().collect();

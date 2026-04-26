@@ -85,16 +85,17 @@ impl Checker {
         let mut structs: HashMap<String, StructDef> = HashMap::new();
         // Pre-pass: register all top-level names. Structs first so that
         // function signatures referring to structs validate against
-        // already-known names. Both keep `kort`/structs from clashing
-        // because `kort` lives in `functions` and structs live in
-        // `structs` — they're different namespaces.
+        // already-known names. Both live in their own keyed-by-name
+        // namespaces; functions and structs can share names (currently
+        // unlikely, but no rule forbids it).
+        //
+        // Module-qualified items use a `module.name` key so `math.abs`
+        // and a user-defined `abs` don't collide.
         for item in &program.items {
             if let Item::Struct(s) = item {
-                if structs.insert(s.name.clone(), s.clone()).is_some() {
-                    return Err(Error::Sema(format!(
-                        "duplicate struct `{}`",
-                        s.name
-                    )));
+                let key = qualified_name(&s.module, &s.name);
+                if structs.insert(key.clone(), s.clone()).is_some() {
+                    return Err(Error::Sema(format!("duplicate struct `{}`", key)));
                 }
             }
         }
@@ -104,8 +105,9 @@ impl Checker {
                     params: f.params.iter().map(|p| p.ty.clone()).collect(),
                     return_type: f.return_type.clone(),
                 };
-                if functions.insert(f.name.clone(), sig).is_some() {
-                    return Err(Error::Sema(format!("duplicate function `{}`", f.name)));
+                let key = qualified_name(&f.module, &f.name);
+                if functions.insert(key.clone(), sig).is_some() {
+                    return Err(Error::Sema(format!("duplicate function `{}`", key)));
                 }
             }
         }
@@ -132,9 +134,14 @@ impl Checker {
         for item in &program.items {
             match item {
                 Item::Function(f) => self.check_function(f)?,
-                // Structs were validated at registration time (resolvable
-                // field types, no cycles). Nothing more to check here.
+                // Structs were validated at registration time.
                 Item::Struct(_) => {}
+                // Imports are loader's responsibility — they should be
+                // resolved and replaced by the time sema runs. Anything
+                // still here means the loader didn't run; skip rather
+                // than asserting so test paths that bypass the loader
+                // (single-file unit tests) still work.
+                Item::Import { .. } => {}
             }
         }
         Ok(())
@@ -157,13 +164,19 @@ impl Checker {
             }
         }
 
+        // Extern functions (no body) — sema only validates the
+        // signature already registered in `new()`. Skip body check.
+        let body = match &f.body {
+            Some(b) => b,
+            None => return Ok(()),
+        };
         self.push_scope();
         self.current_params = f.params.iter().map(|p| p.name.clone()).collect();
         self.current_return = f.return_type.clone();
         for p in &f.params {
             self.declare(&p.name, p.ty.clone());
         }
-        for s in &f.body.stmts {
+        for s in &body.stmts {
             self.check_stmt(s)?;
         }
         self.pop_scope();
@@ -408,10 +421,14 @@ impl Checker {
             Stmt::ExprStmt(e) => {
                 // Allow void calls as statements (their value is discarded);
                 // for everything else just type-check and toss the type.
-                if let Expr::Call { callee, .. } = e {
-                    if let Some(sig) = self.functions.get(callee).cloned() {
+                if let Expr::Call {
+                    module, callee, ..
+                } = e
+                {
+                    let key = qualified_name(module, callee);
+                    if let Some(sig) = self.functions.get(&key).cloned() {
                         if sig.return_type.is_none() {
-                            self.check_call(callee, e)?;
+                            self.check_call(e)?;
                             return Ok(());
                         }
                     }
@@ -494,23 +511,27 @@ impl Checker {
         Ok(())
     }
 
-    /// Type-check a function call and return its return type. Used in
-    /// both expression contexts (`emit_expr`) and statement contexts
-    /// (`ExprStmt` for void calls). Caller decides what to do with the
-    /// return type (or its absence).
-    fn check_call(&mut self, callee: &str, e: &Expr) -> Result<Option<Type>> {
-        let Expr::Call { args, .. } = e else {
+    /// Type-check a function call and return its return type. Handles
+    /// both bare (`foo(x)`) and module-qualified (`math.sqrt(x)`) calls
+    /// — the difference is just the lookup key.
+    fn check_call(&mut self, e: &Expr) -> Result<Option<Type>> {
+        let Expr::Call {
+            module,
+            callee,
+            args,
+        } = e
+        else {
             unreachable!("check_call requires Expr::Call");
         };
-        let sig = self
-            .functions
-            .get(callee)
-            .cloned()
-            .ok_or_else(|| Error::Sema(format!("call to undefined function `{}`", callee)))?;
+        let key = qualified_name(module, callee);
+        let display_name = key.clone();
+        let sig = self.functions.get(&key).cloned().ok_or_else(|| {
+            Error::Sema(format!("call to undefined function `{}`", display_name))
+        })?;
         if sig.params.len() != args.len() {
             return Err(Error::Sema(format!(
                 "function `{}` expects {} args, got {}",
-                callee,
+                display_name,
                 sig.params.len(),
                 args.len()
             )));
@@ -521,7 +542,7 @@ impl Checker {
                 return Err(Error::Sema(format!(
                     "argument {} of `{}`: expected {}, got {}",
                     i + 1,
-                    callee,
+                    display_name,
                     type_name(expected),
                     type_name(&at)
                 )));
@@ -675,12 +696,15 @@ impl Checker {
                 }
                 Ok(Type::Bool)
             }
-            Expr::Call { callee, .. } => {
-                let ret = self.check_call(callee, e)?;
+            Expr::Call {
+                module, callee, ..
+            } => {
+                let display = qualified_name(module, callee);
+                let ret = self.check_call(e)?;
                 ret.ok_or_else(|| {
                     Error::Sema(format!(
                         "function `{}` returns no value but its result is used",
-                        callee
+                        display
                     ))
                 })
             }
@@ -910,6 +934,16 @@ impl Checker {
     }
 }
 
+/// Build the lookup key for a function or struct. User-level items go
+/// in by their bare name; module-imported items get the `module.name`
+/// form so `math.abs` and a user `abs` don't clash.
+fn qualified_name(module: &Option<String>, name: &str) -> String {
+    match module {
+        Some(m) => format!("{}.{}", m, name),
+        None => name.to_string(),
+    }
+}
+
 /// Mott-language type name for diagnostics.
 fn type_name(t: &Type) -> String {
     match t {
@@ -993,6 +1027,114 @@ mod tests {
         let tokens = Lexer::new(src).tokenize()?;
         let program = Parser::new(tokens).parse()?;
         check(&program)
+    }
+
+    /// Build a Program directly with module-tagged items, bypassing the
+    /// loader. Lets sema tests validate qualified-call logic without
+    /// needing real stdlib files on disk.
+    fn check_with_module_function(
+        user_src: &str,
+        module: &str,
+        fn_name: &str,
+        params: Vec<crate::ast::Type>,
+        ret: Option<crate::ast::Type>,
+    ) -> Result<TypeInfo> {
+        use crate::ast::{Function, Item, Param};
+        let tokens = Lexer::new(user_src).tokenize()?;
+        let mut program = Parser::new(tokens).parse()?;
+        // Inject an extern function tagged with the module name.
+        let extern_fn = Function {
+            name: fn_name.to_string(),
+            params: params
+                .into_iter()
+                .enumerate()
+                .map(|(i, ty)| Param {
+                    name: format!("p{}", i),
+                    ty,
+                })
+                .collect(),
+            return_type: ret,
+            body: None,
+            module: Some(module.to_string()),
+        };
+        program.items.push(Item::Function(extern_fn));
+        check(&program)
+    }
+
+    #[test]
+    fn qualified_call_passes_when_imported() {
+        check_with_module_function(
+            r#"
+fnc kort() {
+    xilit r: daqosh = math.sqrt(2.0)
+}
+"#,
+            "math",
+            "sqrt",
+            vec![Type::Daqosh],
+            Some(Type::Daqosh),
+        )
+        .expect("should pass");
+    }
+
+    #[test]
+    fn qualified_call_unknown_module_function_rejected() {
+        let err = check_with_module_function(
+            r#"
+fnc kort() {
+    xilit r: daqosh = math.bogus(2.0)
+}
+"#,
+            "math",
+            "sqrt",
+            vec![Type::Daqosh],
+            Some(Type::Daqosh),
+        )
+        .unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("undefined function") && msg.contains("math.bogus"),
+                "got: {}", msg);
+    }
+
+    #[test]
+    fn qualified_call_wrong_argument_type_rejected() {
+        let err = check_with_module_function(
+            r#"
+fnc kort() {
+    xilit r: daqosh = math.sqrt(2)
+}
+"#,
+            "math",
+            "sqrt",
+            vec![Type::Daqosh],
+            Some(Type::Daqosh),
+        )
+        .unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("expected daqosh"), "got: {}", msg);
+    }
+
+    #[test]
+    fn user_can_have_function_with_same_name_as_module_function() {
+        // User's `sqrt` and `math.sqrt` live in different namespaces.
+        check_with_module_function(
+            r#"
+fnc sqrt(x: terah) -> terah {
+    yuxadalo x
+}
+fnc kort() {
+    xilit lhs: terah = sqrt(4)
+    xilit rhs: daqosh = math.sqrt(4.0)
+    yazde("{lhs}")
+    yazde("{rhs}")
+}
+"#,
+            "math",
+            "sqrt",
+            vec![Type::Daqosh],
+            Some(Type::Daqosh),
+        )
+        .expect("user sqrt(terah) and math.sqrt(daqosh) coexist");
     }
 
     #[test]

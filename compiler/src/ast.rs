@@ -18,6 +18,11 @@ pub struct Program {
 pub enum Item {
     Function(Function),
     Struct(StructDef),
+    /// `eca name` — bring module into scope. Resolved by the loader
+    /// before sema sees the program; after loading, imports are still
+    /// here for diagnostics but their content has been merged in as
+    /// regular Items with `module = Some(name)` set.
+    Import { module: String },
 }
 
 /// A `kep` declaration. Field order is preserved (matters for codegen
@@ -26,6 +31,9 @@ pub enum Item {
 pub struct StructDef {
     pub name: String,
     pub fields: Vec<Field>,
+    /// Same role as `Function::module` — owning module of this struct.
+    /// User-defined: None. Imported from stdlib or another file: Some.
+    pub module: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -39,7 +47,14 @@ pub struct Function {
     pub name: String,
     pub params: Vec<Param>,
     pub return_type: Option<Type>,
-    pub body: Block,
+    /// `None` means "extern" — body lives in the C runtime, signature only.
+    /// User code always has `Some(block)`; module-loaded stdlib functions
+    /// (e.g. `math.sqrt`) are typically `None`.
+    pub body: Option<Block>,
+    /// `None` for user-level functions; `Some("math")` for functions
+    /// loaded from a module. Used for name-mangling at codegen and for
+    /// validating qualified call sites in sema.
+    pub module: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -150,6 +165,10 @@ pub enum Expr {
     LogicAnd(Vec<Expr>),
     LogicOr(Vec<Expr>),
     Call {
+        /// `None` for plain calls (`foo(1, 2)`); `Some("math")` for
+        /// qualified calls (`math.sqrt(2.0)`). Resolution happens in
+        /// sema against the imported module table.
+        module: Option<String>,
         callee: String,
         args: Vec<Expr>,
     },

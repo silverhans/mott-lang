@@ -301,6 +301,7 @@ impl<'a> Lexer<'a> {
             "push" => TokenKind::Push,
             "pop" => TokenKind::Pop,
             "kep" => TokenKind::Kep,
+            "eca" => TokenKind::Eca,
             "baqderg" => TokenKind::Baqderg,
             "xarco" => TokenKind::Xarco,
             "a" => TokenKind::A,
@@ -584,7 +585,7 @@ mod tests {
             kinds(
                 "fnc xilit yuxadalo yazde esha khi cqachunna yallalc chu \
                  sac khida baram parse_terah parse_daqosh to_terah to_daqosh \
-                 push pop kep baqderg xarco a ya"
+                 push pop kep eca baqderg xarco a ya"
             ),
             vec![
                 TokenKind::Fnc,
@@ -606,6 +607,7 @@ mod tests {
                 TokenKind::Push,
                 TokenKind::Pop,
                 TokenKind::Kep,
+                TokenKind::Eca,
                 TokenKind::Baqderg,
                 TokenKind::Xarco,
                 TokenKind::A,

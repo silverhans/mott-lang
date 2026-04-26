@@ -48,18 +48,29 @@ impl Parser {
         match self.peek() {
             TokenKind::Fnc => Ok(Item::Function(self.parse_function()?)),
             TokenKind::Kep => Ok(Item::Struct(self.parse_kep()?)),
+            TokenKind::Eca => self.parse_import(),
             _ => {
                 let (line, col) = self.peek_pos();
                 Err(Error::Parse {
                     line,
                     col,
                     message: format!(
-                        "expected `fnc` or `kep` at top level, got {:?}",
+                        "expected `fnc`, `kep`, or `eca` at top level, got {:?}",
                         self.peek()
                     ),
                 })
             }
         }
+    }
+
+    /// `eca module_name` — import directive. Only valid at top level.
+    /// We don't enforce ordering (imports-before-decls) at parse time —
+    /// the loader runs imports anyway, so it's consistent regardless.
+    fn parse_import(&mut self) -> Result<Item> {
+        self.expect(&TokenKind::Eca, "expected `eca`")?;
+        let module = self.expect_ident("expected module name after `eca`")?;
+        self.expect(&TokenKind::Semicolon, "expected `;` after import")?;
+        Ok(Item::Import { module })
     }
 
     /// `kep Name { f1: T1, f2: T2 }` — top-level struct declaration.
@@ -96,7 +107,11 @@ impl Parser {
             }
         }
         self.expect(&TokenKind::RBrace, "expected `}` to close struct")?;
-        Ok(StructDef { name, fields })
+        Ok(StructDef {
+            name,
+            fields,
+            module: None,
+        })
     }
 
     fn parse_function(&mut self) -> Result<Function> {
@@ -121,12 +136,26 @@ impl Parser {
         } else {
             None
         };
-        let body = self.parse_block()?;
+        // Extern declaration: signature without body. The lexer
+        // synthesizes a `;` after the closing paren / type, so we look
+        // for that. Body-bearing functions have `{` here instead.
+        let body = if self.check(&TokenKind::LBrace) {
+            Some(self.parse_block()?)
+        } else {
+            // Eat the synthesized terminator; if it's missing, expect()
+            // gives a clearer error than letting the next stmt parse fail.
+            self.expect(
+                &TokenKind::Semicolon,
+                "extern function declaration: expected `;` or `{` after signature",
+            )?;
+            None
+        };
         Ok(Function {
             name,
             params,
             return_type,
             body,
+            module: None, // user-level by default; loader sets it for imports
         })
     }
 
@@ -584,12 +613,41 @@ impl Parser {
                         }
                     }
                     self.expect(&TokenKind::RParen, "expected `)` after arguments")?;
-                    Expr::Call { callee: name, args }
+                    Expr::Call {
+                        module: None,
+                        callee: name,
+                        args,
+                    }
                 } else if self.allow_struct_lit && self.check(&TokenKind::LBrace) {
                     // `Name { f1: e1, f2: e2 }` — struct literal. Disabled
                     // when we're parsing a condition because `{` there
                     // belongs to the block body.
                     self.parse_struct_lit_body(name)?
+                } else if self.check(&TokenKind::Dot)
+                    && matches!(self.peek_kind_at(1), Some(TokenKind::Ident(_)))
+                    && matches!(self.peek_kind_at(2), Some(TokenKind::LParen))
+                {
+                    // Module-qualified call: `name . field (args)`. Three
+                    // tokens of lookahead disambiguate from postfix field
+                    // access (`name.field` without trailing `(`). When we
+                    // get methods someday this branch becomes the natural
+                    // dispatch site for them too.
+                    self.advance(); // '.'
+                    let func = self.expect_ident("expected function name after `.`")?;
+                    self.expect(&TokenKind::LParen, "expected `(` after qualified name")?;
+                    let mut args = Vec::new();
+                    if !self.check(&TokenKind::RParen) {
+                        args.push(self.parse_expr()?);
+                        while self.matches(&TokenKind::Comma) {
+                            args.push(self.parse_expr()?);
+                        }
+                    }
+                    self.expect(&TokenKind::RParen, "expected `)` after arguments")?;
+                    Expr::Call {
+                        module: Some(name),
+                        callee: func,
+                        args,
+                    }
                 } else {
                     Expr::Ident(name)
                 };
@@ -929,6 +987,14 @@ mod tests {
         }
     }
 
+    /// Helper for the common pattern: get the body of the only-function in
+    /// a one-function program. Tests that previously did
+    /// `only_function(&p).body.stmts` now do `only_body(&p).stmts`. Saves
+    /// each test from peeling the new `Option<Block>` themselves.
+    fn body(f: &Function) -> &Block {
+        f.body.as_ref().expect("function has body")
+    }
+
     #[test]
     fn empty_main_function() {
         let p = parse_ok("fnc kort() {}");
@@ -936,7 +1002,7 @@ mod tests {
         assert_eq!(f.name, "kort");
         assert!(f.params.is_empty());
         assert!(f.return_type.is_none());
-        assert!(f.body.stmts.is_empty());
+        assert!(body(f).stmts.is_empty());
     }
 
     #[test]
@@ -949,8 +1015,8 @@ mod tests {
         assert_eq!(f.params[0].name, "x");
         assert_eq!(f.params[0].ty, Type::Terah);
         assert_eq!(f.return_type, Some(Type::Terah));
-        assert_eq!(f.body.stmts.len(), 1);
-        assert!(matches!(f.body.stmts[0], Stmt::Return(Some(_))));
+        assert_eq!(body(f).stmts.len(), 1);
+        assert!(matches!(body(f).stmts[0], Stmt::Return(Some(_))));
     }
 
     #[test]
@@ -961,7 +1027,7 @@ mod tests {
         // stmt-enders).
         let p = parse_ok("fnc kort() {\n    xilit x: terah\n}\n");
         let f = only_function(&p);
-        match &f.body.stmts[0] {
+        match &body(f).stmts[0] {
             Stmt::Let { name, ty, value } => {
                 assert_eq!(name, "x");
                 assert_eq!(*ty, Some(Type::Terah));
@@ -978,6 +1044,65 @@ mod tests {
         let msg = format!("{}", err);
         assert!(msg.contains("type annotation"), "got: {}", msg);
         assert!(msg.contains("initializer"), "got: {}", msg);
+    }
+
+    #[test]
+    fn import_parses_at_top_level() {
+        let p = parse_ok(
+            r#"
+eca math
+fnc kort() {}
+"#,
+        );
+        assert_eq!(p.items.len(), 2);
+        match &p.items[0] {
+            Item::Import { module } => assert_eq!(module, "math"),
+            other => panic!("expected import, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn extern_function_parses_without_body() {
+        let p = parse_ok(
+            r#"
+fnc sqrt(x: daqosh) -> daqosh
+fnc kort() {}
+"#,
+        );
+        match &p.items[0] {
+            Item::Function(f) => {
+                assert_eq!(f.name, "sqrt");
+                assert!(f.body.is_none());
+            }
+            other => panic!("expected function, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn qualified_call_parses_as_call_with_module() {
+        let p = parse_ok(
+            r#"
+fnc kort() {
+    xilit r: daqosh = math.sqrt(2.0)
+}
+"#,
+        );
+        let f = only_function(&p);
+        match &body(f).stmts[0] {
+            Stmt::Let { value, .. } => match value {
+                Some(Expr::Call {
+                    module: Some(m),
+                    callee,
+                    args,
+                }) => {
+                    assert_eq!(m, "math");
+                    assert_eq!(callee, "sqrt");
+                    assert_eq!(args.len(), 1);
+                }
+                other => panic!("expected qualified Call, got {:?}", other),
+            },
+            other => panic!("expected Let, got {:?}", other),
+        }
     }
 
     #[test]
@@ -1031,7 +1156,7 @@ fnc kort() {
         );
         // Find the kort function, check it has Stmt::Let with StructLit value.
         match &p.items[1] {
-            Item::Function(f) => match &f.body.stmts[0] {
+            Item::Function(f) => match &body(f).stmts[0] {
                 Stmt::Let { value, .. } => {
                     assert!(matches!(value, Some(Expr::StructLit { .. })));
                 }
@@ -1058,7 +1183,7 @@ fnc kort() {
 "#,
         );
         match &p.items[1] {
-            Item::Function(f) => match &f.body.stmts[1] {
+            Item::Function(f) => match &body(f).stmts[1] {
                 Stmt::If { cond, .. } => {
                     assert!(matches!(cond, Expr::Ident(_)));
                 }
@@ -1099,7 +1224,7 @@ fnc kort() {
 "#,
         );
         match &p.items[1] {
-            Item::Function(f) => match &f.body.stmts[1] {
+            Item::Function(f) => match &body(f).stmts[1] {
                 Stmt::FieldAssign {
                     target,
                     field,
@@ -1159,7 +1284,7 @@ fnc kort() {
     fn let_statement_inferred_type() {
         let p = parse_ok("fnc kort() { xilit x = 5; }");
         let f = only_function(&p);
-        match &f.body.stmts[0] {
+        match &body(f).stmts[0] {
             Stmt::Let { name, ty, value } => {
                 assert_eq!(name, "x");
                 assert!(ty.is_none());
@@ -1173,7 +1298,7 @@ fnc kort() {
     fn let_statement_explicit_type() {
         let p = parse_ok("fnc kort() { xilit x: terah = 5; }");
         let f = only_function(&p);
-        match &f.body.stmts[0] {
+        match &body(f).stmts[0] {
             Stmt::Let { ty, .. } => assert_eq!(*ty, Some(Type::Terah)),
             other => panic!("expected Let, got {:?}", other),
         }
@@ -1184,7 +1309,7 @@ fnc kort() {
         // `x = 5;` is assignment, not the comparison `x == 5`
         let p = parse_ok("fnc kort() { xilit x = 0; x = 5; }");
         let f = only_function(&p);
-        assert!(matches!(f.body.stmts[1], Stmt::Assign { .. }));
+        assert!(matches!(body(f).stmts[1], Stmt::Assign { .. }));
     }
 
     #[test]
@@ -1195,7 +1320,7 @@ fnc kort() {
         if let Stmt::Let {
             value: Some(Expr::Binary { op, left, right }),
             ..
-        } = &f.body.stmts[0]
+        } = &body(f).stmts[0]
         {
             assert!(matches!(op, BinOp::Add));
             assert!(matches!(**left, Expr::Integer(1)));
@@ -1223,7 +1348,7 @@ fnc kort() {
             }"#,
         );
         let f = only_function(&p);
-        match &f.body.stmts[0] {
+        match &body(f).stmts[0] {
             Stmt::If {
                 else_block: Some(_),
                 ..
@@ -1236,7 +1361,7 @@ fnc kort() {
     fn while_loop() {
         let p = parse_ok("fnc kort() { cqachunna (i < 10) { i = i + 1; } }");
         let f = only_function(&p);
-        assert!(matches!(f.body.stmts[0], Stmt::While { .. }));
+        assert!(matches!(body(f).stmts[0], Stmt::While { .. }));
     }
 
     #[test]
@@ -1250,7 +1375,7 @@ fnc kort() {
             }"#,
         );
         let f = only_function(&p);
-        let Stmt::While { body, .. } = &f.body.stmts[0] else {
+        let Stmt::While { body, .. } = &body(f).stmts[0] else {
             panic!("expected While");
         };
         assert!(matches!(body.stmts[0], Stmt::Break));
@@ -1280,7 +1405,7 @@ fnc kort() {
         let f = only_function(&p);
         // body: [let, if]. The outer If's else should be a single-stmt Block
         // whose sole stmt is another If with its own else.
-        let Stmt::If { else_block, .. } = &f.body.stmts[1] else {
+        let Stmt::If { else_block, .. } = &body(f).stmts[1] else {
             panic!("expected If at body[1]");
         };
         let else_block = else_block.as_ref().expect("outer if must have else");
@@ -1310,7 +1435,7 @@ fnc kort() {
             }"#,
         );
         let f = only_function(&p);
-        let Stmt::If { else_block, .. } = &f.body.stmts[1] else {
+        let Stmt::If { else_block, .. } = &body(f).stmts[1] else {
             panic!("expected If");
         };
         let else_block = else_block.as_ref().unwrap();
@@ -1328,7 +1453,7 @@ fnc kort() {
     fn logical_and_two_conjuncts() {
         let p = parse_ok("fnc kort() { nagah sanna (x > 0 a, x < 10 a) { yazde(\"ok\"); } }");
         let f = only_function(&p);
-        if let Stmt::If { cond, .. } = &f.body.stmts[0] {
+        if let Stmt::If { cond, .. } = &body(f).stmts[0] {
             if let Expr::LogicAnd(items) = cond {
                 assert_eq!(items.len(), 2);
             } else {
@@ -1348,7 +1473,7 @@ fnc kort() {
         if let Stmt::If {
             cond: Expr::LogicAnd(items),
             ..
-        } = &f.body.stmts[0]
+        } = &body(f).stmts[0]
         {
             assert_eq!(items.len(), 3);
         } else {
@@ -1370,7 +1495,7 @@ fnc kort() {
         if let Stmt::If {
             cond: Expr::LogicOr(items),
             ..
-        } = &f.body.stmts[0]
+        } = &body(f).stmts[0]
         {
             assert_eq!(items.len(), 3);
         } else {
@@ -1383,14 +1508,14 @@ fnc kort() {
         let p = parse_ok("fnc kort() { xilit x = -5; xilit y = !baqderg; }");
         let f = only_function(&p);
         assert!(matches!(
-            &f.body.stmts[0],
+            &body(f).stmts[0],
             Stmt::Let {
                 value: Some(Expr::Unary { op: UnOp::Neg, .. }),
                 ..
             }
         ));
         assert!(matches!(
-            &f.body.stmts[1],
+            &body(f).stmts[1],
             Stmt::Let {
                 value: Some(Expr::Unary { op: UnOp::Not, .. }),
                 ..
@@ -1402,7 +1527,7 @@ fnc kort() {
     fn call_expression() {
         let p = parse_ok("fnc kort() { add(1, 2); }");
         let f = only_function(&p);
-        if let Stmt::ExprStmt(Expr::Call { callee, args }) = &f.body.stmts[0] {
+        if let Stmt::ExprStmt(Expr::Call { callee, args, .. }) = &body(f).stmts[0] {
             assert_eq!(callee, "add");
             assert_eq!(args.len(), 2);
         } else {
@@ -1414,7 +1539,7 @@ fnc kort() {
     fn esha_parses_as_input_expression() {
         let p = parse_ok("fnc kort() { xilit s: deshnash = esha(); }");
         let f = only_function(&p);
-        let Stmt::Let { value, .. } = &f.body.stmts[0] else {
+        let Stmt::Let { value, .. } = &body(f).stmts[0] else {
             panic!("expected let");
         };
         assert!(matches!(value, Some(Expr::Input)));
@@ -1440,7 +1565,7 @@ fnc kort() {
                     ..
                 }),
             ..
-        } = &f.body.stmts[0]
+        } = &body(f).stmts[0]
         {
             assert!(matches!(
                 **left,
@@ -1458,7 +1583,7 @@ fnc kort() {
     fn string_interpolation_preserved_in_ast() {
         let p = parse_ok(r#"fnc kort() { yazde("x = {x}"); }"#);
         let f = only_function(&p);
-        if let Stmt::Print(Expr::String(parts)) = &f.body.stmts[0] {
+        if let Stmt::Print(Expr::String(parts)) = &body(f).stmts[0] {
             assert_eq!(parts.len(), 2);
             assert!(matches!(parts[0], StringPart::Literal(_)));
             assert!(matches!(parts[1], StringPart::Interpolation(_)));
@@ -1474,9 +1599,9 @@ fnc kort() {
         let f = only_function(&p);
         assert_eq!(f.name, "kort");
         // Body: xilit i..., cqachunna(...)
-        assert_eq!(f.body.stmts.len(), 2);
-        assert!(matches!(f.body.stmts[0], Stmt::Let { .. }));
-        assert!(matches!(f.body.stmts[1], Stmt::While { .. }));
+        assert_eq!(body(f).stmts.len(), 2);
+        assert!(matches!(body(f).stmts[0], Stmt::Let { .. }));
+        assert!(matches!(body(f).stmts[1], Stmt::While { .. }));
     }
 
     #[test]
@@ -1485,7 +1610,7 @@ fnc kort() {
         let p = parse_ok(source);
         let f = only_function(&p);
         assert_eq!(f.name, "kort");
-        assert!(matches!(f.body.stmts[0], Stmt::Print(_)));
+        assert!(matches!(body(f).stmts[0], Stmt::Print(_)));
     }
 
     #[test]
@@ -1519,8 +1644,8 @@ fnc kort() {
              }\n",
         );
         let f = only_function(&p);
-        assert!(matches!(f.body.stmts[0], Stmt::Let { .. }));
-        assert!(matches!(f.body.stmts[1], Stmt::While { .. }));
+        assert!(matches!(body(f).stmts[0], Stmt::Let { .. }));
+        assert!(matches!(body(f).stmts[1], Stmt::While { .. }));
     }
 
     #[test]
@@ -1542,7 +1667,7 @@ fnc kort() {
              }\n",
         );
         let f = only_function(&p);
-        let Stmt::If { else_block, .. } = &f.body.stmts[1] else {
+        let Stmt::If { else_block, .. } = &body(f).stmts[1] else {
             panic!("expected If");
         };
         let eb = else_block.as_ref().unwrap();
@@ -1563,7 +1688,7 @@ fnc kort() {
              }\n",
         );
         let f = only_function(&p);
-        assert!(matches!(f.body.stmts[0], Stmt::Let { .. }));
+        assert!(matches!(body(f).stmts[0], Stmt::Let { .. }));
     }
 
     #[test]
@@ -1571,7 +1696,7 @@ fnc kort() {
         // Backward compatibility: users may still write C-style `;`.
         let p = parse_ok("fnc kort() { xilit x: terah = 1; yazde(x); }");
         let f = only_function(&p);
-        assert_eq!(f.body.stmts.len(), 2);
+        assert_eq!(body(f).stmts.len(), 2);
     }
 
     #[test]
@@ -1582,7 +1707,7 @@ fnc kort() {
             }"#,
         );
         let f = only_function(&p);
-        let Stmt::Let { ty, value, .. } = &f.body.stmts[0] else {
+        let Stmt::Let { ty, value, .. } = &body(f).stmts[0] else {
             panic!("expected Let");
         };
         assert_eq!(ty, &Some(Type::Array(Box::new(Type::Terah))));
@@ -1598,7 +1723,7 @@ fnc kort() {
             }"#,
         );
         let f = only_function(&p);
-        let Stmt::Let { value, .. } = &f.body.stmts[1] else {
+        let Stmt::Let { value, .. } = &body(f).stmts[1] else {
             panic!("expected Let");
         };
         assert!(matches!(value, Some(Expr::Index { .. })));
@@ -1613,7 +1738,7 @@ fnc kort() {
             }"#,
         );
         let f = only_function(&p);
-        assert!(matches!(f.body.stmts[1], Stmt::IndexAssign { .. }));
+        assert!(matches!(body(f).stmts[1], Stmt::IndexAssign { .. }));
     }
 
     #[test]
@@ -1627,7 +1752,7 @@ fnc kort() {
             }"#,
         );
         let f = only_function(&p);
-        let Stmt::ForEach { var, iter, .. } = &f.body.stmts[1] else {
+        let Stmt::ForEach { var, iter, .. } = &body(f).stmts[1] else {
             panic!("expected ForEach");
         };
         assert_eq!(var, "x");
@@ -1644,7 +1769,7 @@ fnc kort() {
             }"#,
         );
         let f = only_function(&p);
-        let Stmt::ForEach { iter, .. } = &f.body.stmts[0] else {
+        let Stmt::ForEach { iter, .. } = &body(f).stmts[0] else {
             panic!("expected ForEach");
         };
         assert!(matches!(iter, IterSource::Range { .. }));
@@ -1658,7 +1783,7 @@ fnc kort() {
             }"#,
         );
         let f = only_function(&p);
-        let Stmt::Let { value, .. } = &f.body.stmts[0] else {
+        let Stmt::Let { value, .. } = &body(f).stmts[0] else {
             panic!("expected Let");
         };
         assert!(matches!(value, Some(Expr::ParseTerah(_))));
@@ -1672,7 +1797,7 @@ fnc kort() {
             }"#,
         );
         let f = only_function(&p);
-        let Stmt::Let { value, .. } = &f.body.stmts[0] else {
+        let Stmt::Let { value, .. } = &body(f).stmts[0] else {
             panic!("expected Let");
         };
         assert!(matches!(value, Some(Expr::ParseDaqosh(_))));
@@ -1694,7 +1819,7 @@ fnc kort() {
             }"#,
         );
         let f = only_function(&p);
-        let Stmt::Let { value, .. } = &f.body.stmts[0] else {
+        let Stmt::Let { value, .. } = &body(f).stmts[0] else {
             panic!("expected Let");
         };
         assert!(matches!(value, Some(Expr::ToTerah(_))));
@@ -1709,7 +1834,7 @@ fnc kort() {
             }"#,
         );
         let f = only_function(&p);
-        let Stmt::Push { name, value } = &f.body.stmts[1] else {
+        let Stmt::Push { name, value } = &body(f).stmts[1] else {
             panic!("expected Push stmt");
         };
         assert_eq!(name, "nums");
@@ -1740,7 +1865,7 @@ fnc kort() {
             }"#,
         );
         let f = only_function(&p);
-        let Stmt::Let { value, .. } = &f.body.stmts[1] else {
+        let Stmt::Let { value, .. } = &body(f).stmts[1] else {
             panic!("expected Let");
         };
         assert!(matches!(value, Some(Expr::Pop(n)) if n == "nums"));
@@ -1756,7 +1881,7 @@ fnc kort() {
             }"#,
         );
         let f = only_function(&p);
-        let Stmt::Let { value, .. } = &f.body.stmts[0] else {
+        let Stmt::Let { value, .. } = &body(f).stmts[0] else {
             panic!("expected Let");
         };
         assert!(matches!(value, Some(Expr::ArrayLit(elems)) if elems.is_empty()));
@@ -1770,7 +1895,7 @@ fnc kort() {
             }"#,
         );
         let f = only_function(&p);
-        let Stmt::Let { value, .. } = &f.body.stmts[0] else {
+        let Stmt::Let { value, .. } = &body(f).stmts[0] else {
             panic!("expected Let");
         };
         assert!(matches!(value, Some(Expr::ToDaqosh(_))));
@@ -1785,7 +1910,7 @@ fnc kort() {
             }"#,
         );
         let f = only_function(&p);
-        let Stmt::Let { value, .. } = &f.body.stmts[1] else {
+        let Stmt::Let { value, .. } = &body(f).stmts[1] else {
             panic!("expected Let");
         };
         assert!(matches!(value, Some(Expr::Baram(_))));

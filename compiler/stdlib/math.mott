@@ -1,0 +1,32 @@
+// math — стандартная математическая библиотека Mott.
+//
+// Все функции — extern (тело в C-рантайме `mott_math.c`, реализации
+// делегируют в libm). Используется через `eca math` + `math.func(...)`.
+
+// --- степени и корни ---
+fnc sqrt(x: daqosh) -> daqosh
+fnc pow(base: daqosh, exp: daqosh) -> daqosh
+fnc exp(x: daqosh) -> daqosh
+
+// --- абсолютное значение (без перегрузки — отдельные имена) ---
+fnc abs_terah(x: terah) -> terah
+fnc abs_daqosh(x: daqosh) -> daqosh
+
+// --- округления (возвращают daqosh; используй to_terah() для целого) ---
+fnc floor(x: daqosh) -> daqosh
+fnc ceil(x: daqosh) -> daqosh
+fnc round(x: daqosh) -> daqosh
+
+// --- тригонометрия (радианы) ---
+fnc sin(x: daqosh) -> daqosh
+fnc cos(x: daqosh) -> daqosh
+fnc tan(x: daqosh) -> daqosh
+
+// --- логарифмы ---
+fnc log(x: daqosh) -> daqosh
+fnc log2(x: daqosh) -> daqosh
+fnc log10(x: daqosh) -> daqosh
+
+// --- константы как функции (в Mott нет const) ---
+fnc pi() -> daqosh
+fnc e() -> daqosh

@@ -26,6 +26,7 @@
 | `push` | | добавить элемент в массив |
 | `pop` | | удалить и вернуть последний элемент |
 | `kep` | кеп | объявление структуры (form/shape) |
+| `eca` | эца | импорт модуля (взять, take) |
 | `baqderg` | бакъдерг | `true` |
 | `xarco` | харцо | `false` |
 | `a` | | постфиксное AND |
@@ -49,7 +50,7 @@
 fnc xilit yuxadalo yazde esha
 nagah sanna khi cqachunna yallalc chu
 sac khida baram parse_terah parse_daqosh to_terah to_daqosh
-push pop kep baqderg xarco a ya
+push pop kep eca baqderg xarco a ya
 terah bool deshnash daqosh
 ```
 
@@ -174,6 +175,19 @@ nagah sanna !ready {
     // ...
 }
 ```
+
+### Модули
+
+```mott
+eca math                                // импорт стандартной библиотеки
+eca my_helpers                          // импорт пользовательского файла
+
+fnc kort() {
+    xilit r: daqosh = math.sqrt(2.0)    // qualified access обязателен
+}
+```
+
+Стандартный `math` даёт: `sqrt`, `pow`, `exp`, `abs_terah`, `abs_daqosh`, `floor`, `ceil`, `round`, `sin`, `cos`, `tan`, `log`, `log2`, `log10`, `pi()`, `e()`.
 
 ### Структуры
 

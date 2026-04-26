@@ -11,8 +11,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 
+use mott::ast::Item;
 use mott::codegen::{c_backend::CBackend, Backend};
 use mott::lexer::Lexer;
+use mott::loader;
 use mott::parser::Parser;
 use mott::sema;
 
@@ -101,8 +103,31 @@ fn main() {
         die(&format!("in {}: {}", args.source.display(), e));
     });
 
-    // Sema runs before codegen. All type errors and language-rule
-    // violations surface here; codegen can assume a well-formed AST.
+    // Loader resolves `eca` imports transitively, merging stdlib and
+    // user-local modules into one flat program. Each item gets tagged
+    // with its source module so sema can validate qualified calls.
+    let program = loader::load_imports(program, &args.source).unwrap_or_else(|e| {
+        die(&format!("in {}: {}", args.source.display(), e));
+    });
+
+    // Track which stdlib modules ended up in the program so we can pass
+    // the right runtime files / link flags to clang. Walk the items and
+    // collect distinct module names.
+    let mut imported_modules: Vec<String> = Vec::new();
+    for item in &program.items {
+        let m = match item {
+            Item::Function(f) => f.module.clone(),
+            Item::Struct(s) => s.module.clone(),
+            Item::Import { .. } => None,
+        };
+        if let Some(name) = m {
+            if !imported_modules.contains(&name) {
+                imported_modules.push(name);
+            }
+        }
+    }
+
+    // Sema runs after loader: all imports flat, all types resolvable.
     sema::check(&program).unwrap_or_else(|e| {
         die(&format!("in {}: {}", args.source.display(), e));
     });
@@ -163,8 +188,8 @@ fn main() {
     });
 
     // Invoke clang. -std=c11 because we use compound literals and _Bool.
-    let status = Command::new("clang")
-        .arg("-std=c11")
+    let mut cmd = Command::new("clang");
+    cmd.arg("-std=c11")
         .arg("-O2")
         .arg("-Wall")
         .arg("-Wno-unused-parameter")
@@ -172,7 +197,24 @@ fn main() {
         .arg(&output)
         .arg(&c_path)
         .arg(&rt_source)
-        .arg(format!("-I{}", rt_header_dir.display()))
+        .arg(format!("-I{}", rt_header_dir.display()));
+
+    // Per-module runtime files: each imported stdlib module that has a C
+    // implementation (e.g. math -> mott_math.c) gets linked in. User
+    // modules don't have a runtime — their code came from .mott source
+    // and was already merged into the generated C.
+    for module in &imported_modules {
+        let module_rt = runtime.join(format!("mott_{}.c", module));
+        if module_rt.is_file() {
+            cmd.arg(&module_rt);
+        }
+        // math needs libm linked in for sqrt/sin/etc.
+        if module == "math" {
+            cmd.arg("-lm");
+        }
+    }
+
+    let status = cmd
         .status()
         .unwrap_or_else(|e| die(&format!("failed to spawn clang: {}", e)));
 
